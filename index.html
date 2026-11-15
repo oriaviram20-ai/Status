@@ -446,6 +446,12 @@ const SPEND_CATS=['סופר ומכולת','מסעדות וקפה','תחבורה 
 const CAT_COLORS=['#0E9F87','#D9A441','#5B7BD5','#C2577A','#8A6FD1','#3FA9C9','#B07B4F','#E07B39','#8A97AE','#9AA5B8'];
 const catColor=c=>CAT_COLORS[Math.max(0,SPEND_CATS.indexOf(c))];
 const CAT_RULES=[
+  [/בנק|דמי כרטיס|עמלה|ביטוח|הפניקס|הראל|מגדל|מנורה|כלל חברה|איילון|הכשרה|שירביט|ליברה|AIG|המסלקה/i,'חשבונות ומנויים'],
+  [/לאסט מינט|lastminute|גלובלסקי|airalo|esim|holiday|נופש/i,'חופשות וטיסות'],
+  [/התחבורה|רישוי|מסופונים|טסט/i,'תחבורה ודלק'],
+  [/אטליז|קצביה|ירקן|ירקות|מאפיי?ה|מעדני|פיצוחי/i,'סופר ומכולת'],
+  [/minecraft|xbox|tickets|הופעות|איגוד|ספורט|רוגבי|כדורגל|מוזיאון/i,'בילוי ופנאי'],
+  [/משתל|צמחי|פרחי/i,'דיור ובית'],
   [/שופרסל|רמי לוי|יוחננוף|ויקטורי|טיב טעם|יינות ביתן|מגה|אושר עד|חצי חינם|קרפור|am:pm|ampm|סופר|מכולת|מינימרקט|שוק/i,'סופר ומכולת'],
   [/וולט|wolt|תן ביס|10bis|סיבוס|cibus|ארומה|קפה|מסעד|בורגר|פיצה|סושי|מקדונלד|גרג|לנדוור|cafe|coffee|bar\b|פאב/i,'מסעדות וקפה'],
   [/פז|דלק|סונול|דור אלון|ten|רב.?קו|רכבת|גט|gett|yango|יאנגו|מוביט|חניון|פנגו|סלופארק|אגד|דן\b|מטרופולין|כביש 6|bird|lime|ליים/i,'תחבורה ודלק'],
@@ -453,7 +459,7 @@ const CAT_RULES=[
   [/סופר.?פארם|super.?pharm|בית מרקחת|מכבי|כללית|מאוחדת|לאומית|ניו.?פארם|be\b|שיננית|רופא|מרפאה/i,'בריאות וטיפוח'],
   [/איקאה|ikea|הום סנטר|ace|אייס|ביתילי|נעמן|פוקס הום|כתר|טמבור/i,'דיור ובית'],
   [/זארה|zara|h&m|קסטרו|פוקס|fox|רנואר|גולף|shein|שיין|aliexpress|עלי.?אקספרס|amazon|אמזון|אסוס|asos|terminal x|טרמינל|קרביץ|באג|ksp|איבורי|ivory|ננו/i,'קניות וביגוד'],
-  [/סינמה|יס פלאנט|רב חן|הופעה|לאן|eventim|כרטיס|תיאטרון|הולמס|הולמס פלייס|גו אקטיב|חדר כושר|גים|gym|steam|playstation|xbox/i,'בילוי ופנאי'],
+  [/סינמה|יס פלאנט|רב חן|הופעה|לאן|eventim|תיאטרון|הולמס|הולמס פלייס|גו אקטיב|חדר כושר|גים|gym|steam|playstation|xbox/i,'בילוי ופנאי'],
   [/אל על|el al|ישראייר|ארקיע|wizz|ryanair|easyjet|booking|airbnb|expedia|מלון|hotel|נמל תעופה/i,'חופשות וטיסות']
 ];
 const BILL_CAT = {electricity:'חשמל',water:'מים',arnona:'ארנונה',phone:'סלולר',internet:'אינטרנט',gas:'גז'};
@@ -979,43 +985,125 @@ function detectCols(rows){
   }
   return null;
 }
-async function importStatement(inp){ const f=inp.files[0]; inp.value=''; if(f) return importFile(f); }
-async function importFile(f){
+async function importStatement(inp){ const fs=[...inp.files]; inp.value=''; if(fs.length) return importFiles(fs); }
+async function importFile(f){ return importFiles([f]); }
+let PDFJSp=null;
+function loadPDFJS(){ if(window.pdfjsLib) return Promise.resolve(window.pdfjsLib); if(PDFJSp) return PDFJSp;
+  PDFJSp=new Promise((res,rej)=>{ const sc=document.createElement('script'); sc.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    sc.onload=()=>{ window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; res(window.pdfjsLib); }; sc.onerror=()=>{ PDFJSp=null; rej(new Error('load')); }; document.head.appendChild(sc); });
+  return PDFJSp; }
+function pdfRows(items){
+  const rows=[];
+  items.forEach(it=>{ const s=it.str; if(!s||!s.trim()) return; const y=Math.round(it.transform[5]); let r=rows.find(r=>r.p===it.p&&Math.abs(r.y-y)<=3); if(!r){ r={p:it.p,y,parts:[]}; rows.push(r);} r.parts.push({x:it.transform[4],s}); });
+  rows.sort((a,b)=>a.p-b.p||b.y-a.y);
+  return rows.map(r=>r.parts.sort((a,b)=>b.x-a.x).map(p=>p.s.trim()).filter(Boolean));
+}
+function parseStatementRows(rows){
+  const tx=[];
+  rows.forEach(parts=>{
+    const line=parts.join(' ');
+    if(/סה"?כ|חיוב בחשבון הבנק ב|לחיוב ב|מסגרת|תאריך רכישה/.test(line)) return;
+    const dateTok=parts.find(p=>/^\d{2}\.\d{2}\.\d{2}(\d{2})?$/.test(p)); if(!dateTok) return;
+    const ils=parts.filter(p=>/^-?₪\s?-?[\d,]+\.\d{2}$|^-?[\d,]+\.\d{2}\s?₪$/.test(p)).map(p=>parseFloat(p.replace(/[₪,\s]/g,'')));
+    if(!ils.length) return;
+    const amt=ils.length>1?ils.reduce((a,b)=>Math.abs(b)<Math.abs(a)?b:a):ils[0];
+    const m=parts.filter(p=>p!==dateTok&&!/^-?[₪$€£]?\s?-?[\d,]+\.\d{2}\s?[₪$€£]?$/.test(p)&&!/^\d{5,}$/.test(p)&&!/^(הוראת קבע|אתר חו"ל|חו"ל|תשלום \d+ מתוך \d+|קרדיט|עסקה טלפונית|בתשלומים)$/.test(p)).join(' ').replace(/\s+/g,' ').trim();
+    const [d,mo,y]=dateTok.split('.');
+    if(m) tx.push({d:`${y.length===2?'20'+y:y}-${mo}-${d}`,m:m.slice(0,60),a:amt});
+  });
+  return tx;
+}
+async function pdfItems(f){
+  const lib=await loadPDFJS(); const doc=await lib.getDocument({data:new Uint8Array(await f.arrayBuffer())}).promise; const items=[];
+  for(let p=1;p<=doc.numPages;p++){ (await (await doc.getPage(p)).getTextContent()).items.forEach(i=>items.push({str:i.str,transform:i.transform,p})); }
+  return items;
+}
+async function pdfTx(f){ return parseStatementRows(pdfRows(await pdfItems(f))); }
+function parsePayslip(items){
+  const rows=pdfRows(items).map(r=>r.join(' ').replace(/\s+/g,' '));
+  const all=rows.join('\n');
+  if(!/תלוש\s*(ה)?שכר|שכר\s*נטו|ניכויי\s*חובה/.test(all)) return null;
+  const pm=all.match(/לחודש\s*(\d{1,2})\s*\/\s*(\d{4})/);
+  const N='(-?[\\d,]+\\.\\d{2})';
+  const first=re=>{ for(const r of rows){ const m=r.match(re); if(m) return parseFloat(m[m.length-1].replace(/,/g,'')); } return null; };
+  const pension=(()=>{ for(const r of rows){ if(/השלמת/.test(r)||!/(מקפת|קרנות|קרן)/.test(r)||!/פנס/.test(r)) continue; const i=Math.max(r.lastIndexOf('פנס'),r.lastIndexOf('מקפת'),r.lastIndexOf('קרנות')); const m=r.slice(i).match(/(-?[\d,]+\.\d{2})/); if(m) return parseFloat(m[1].replace(/,/g,'')); } return null; })();
+  const net=first(new RegExp('שכר נטו\\s*'+N))??first(new RegExp('לתשלום\\s*'+N));
+  if(!pm||net==null) return {period:pm?`${pm[2]}-${String(pm[1]).padStart(2,'0')}`:null,net,tax:null,bl:null,health:null,mand:null,pension:null,partial:true};
+  return {period:pm?`${pm[2]}-${String(pm[1]).padStart(2,'0')}`:null,net,
+    tax:first(new RegExp('(?:^|\\s)מס הכנסה\\s*'+N)), bl:first(new RegExp('(?:^|\\s)ב\\.\\s?לאומי\\s*'+N)),
+    health:first(new RegExp('(?:^|\\s)מס בריאות\\s*'+N)), mand:first(new RegExp('ניכויי חובה\\s*'+N)), pension, partial:!pm||net==null}
+}
+async function sheetTx(f){
+  const XLSX=await loadXLSX(); let wb;
+  if(/\.csv$/i.test(f.name)||f.type==='text/csv'){ const buf=await f.arrayBuffer(); let txt=new TextDecoder('utf-8').decode(buf); if(txt.includes('�')) txt=new TextDecoder('windows-1255').decode(buf); wb=XLSX.read(txt,{type:'string',cellDates:true}); }
+  else wb=XLSX.read(await f.arrayBuffer(),{type:'array',cellDates:true});
+  const tx=[];
+  for(const name of wb.SheetNames){
+    const rows=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:true,defval:''});
+    let c=detectCols(rows);
+    if(!c&&sampleFn&&rows.length){ try{ const g=await sampleFn.json(`These are the first rows of an Israeli credit card or bank statement spreadsheet, as a JSON array of rows. Find the header row and the column indexes (0-based) of the transaction date, the merchant or description, and the charged amount. Reply with only {"headerRow":number,"dateCol":number,"merchantCol":number,"amountCol":number} or {"headerRow":-1} if this is not a statement.\n${JSON.stringify(rows.slice(0,15).map(r=>r.slice(0,12).map(x=>String(x).slice(0,40))))}`,{modelTier:'quick'}); if(g&&g.headerRow>=0) c={hr:g.headerRow,di:g.dateCol,mi:g.merchantCol,ai:g.amountCol}; }catch(e){} }
+    if(!c) continue;
+    for(let r=c.hr+1;r<rows.length;r++){
+      const row=rows[r]; const m=String(row[c.mi]??'').trim(), a=parseAmount(row[c.ai]), d=parseDate(row[c.di]);
+      if(!m||!isFinite(a)||a===0||/סה.?כ|סך הכל|total|יתרה/i.test(m)||looksSensitive(m)&&/\d{6,}/.test(m)) continue;
+      tx.push({m:m.slice(0,60),a,d});
+    }
+  }
+  return tx;
+}
+async function importFiles(files){
   impUI.busy=true; impUI.error=''; impUI.res=null; render();
   try{
-    const XLSX=await loadXLSX();
-    let wb;
-    if(/\.csv$/i.test(f.name)||f.type==='text/csv'){ const buf=await f.arrayBuffer(); let txt=new TextDecoder('utf-8').decode(buf); if(txt.includes('\ufffd')) txt=new TextDecoder('windows-1255').decode(buf); wb=XLSX.read(txt,{type:'string',cellDates:true}); }
-    else wb=XLSX.read(await f.arrayBuffer(),{type:'array',cellDates:true});
-    const tx=[];
-    for(const name of wb.SheetNames){
-      const rows=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:true,defval:''});
-      let c=detectCols(rows);
-      if(!c&&sampleFn&&rows.length){ try{ const g=await sampleFn.json(`These are the first rows of an Israeli credit card or bank statement spreadsheet, as a JSON array of rows. Find the header row and the column indexes (0-based) of the transaction date, the merchant or description, and the charged amount. Reply with only {"headerRow":number,"dateCol":number,"merchantCol":number,"amountCol":number} or {"headerRow":-1} if this is not a statement.\n${JSON.stringify(rows.slice(0,15).map(r=>r.slice(0,12).map(x=>String(x).slice(0,40))))}`,{modelTier:'quick'}); if(g&&g.headerRow>=0) c={hr:g.headerRow,di:g.dateCol,mi:g.merchantCol,ai:g.amountCol}; }catch(e){} }
-      if(!c) continue;
-      for(let r=c.hr+1;r<rows.length;r++){
-        const row=rows[r]; const m=String(row[c.mi]??'').trim(), a=parseAmount(row[c.ai]), d=parseDate(row[c.di]);
-        if(!m||!isFinite(a)||a===0||/סה.?כ|סך הכל|total|יתרה/i.test(m)||looksSensitive(m)&&/\d{6,}/.test(m)) continue;
-        tx.push({m:m.slice(0,60),a,d});
-      }
+    let tx=[], bad=[], slips=[];
+    for(const f of files){
+      try{
+        if(/\.pdf$/i.test(f.name)||f.type==='application/pdf'){
+          const items=await pdfItems(f), sl=parsePayslip(items);
+          if(sl){ slips.push(sl); continue; }
+          const t=parseStatementRows(pdfRows(items)); if(t.length) tx=tx.concat(t); else bad.push(f.name);
+        } else { const t=await sheetTx(f); if(t.length) tx=tx.concat(t); else bad.push(f.name); }
+      }catch(e){ if(e&&e.message==='load') throw e; bad.push(f.name); }
     }
-    if(!tx.length) throw new Error('nocols');
-    const cnt={}; tx.forEach(t=>{ if(t.d){ const k=t.d.slice(0,7); cnt[k]=(cnt[k]||0)+1; } });
-    const months=Object.keys(cnt).sort(); const ym=months.length?months.reduce((a,b)=>cnt[b]>cnt[a]?b:a,months[0]):ymNow();
+    slips.sort((a,b)=>(a.period||'').localeCompare(b.period||''));
+    if(!tx.length&&!slips.length) throw new Error('nocols');
+    if(!tx.length){ impUI.res={months:[],files:files.length,bad,n:0,total:0,slips}; return; }
     const map={}, unknown=[];
     [...new Set(tx.map(t=>t.m))].forEach(m=>{ const r=CAT_RULES.find(([re])=>re.test(m)); if(r) map[m]=r[1]; else unknown.push(m); });
     if(unknown.length&&sampleFn){
       try{ const g=await sampleFn.json(`Classify each merchant name from an Israeli card statement into exactly one category from this list: ${JSON.stringify(SPEND_CATS)}. Reply with only a JSON object mapping each merchant string exactly as given to its category.\nMerchants: ${JSON.stringify(unknown.slice(0,180))}`,{modelTier:'quick'});
         if(g&&typeof g==='object') for(const k in g) if(SPEND_CATS.includes(g[k])) map[k]=g[k]; }catch(e){}
     }
-    const cats={}, byM={}; let total=0;
-    tx.forEach(t=>{ const c=map[t.m]||'אחר'; cats[c]=(cats[c]||0)+t.a; byM[t.m]=(byM[t.m]||0)+t.a; total+=t.a; });
-    for(const k in cats) cats[k]=Math.round(cats[k]);
-    impUI.res={ym,months,total:Math.round(total),cats,n:tx.length,top:Object.entries(byM).sort((a,b)=>b[1]-a[1]).slice(0,5)};
-  }catch(e){ impUI.error=e&&e.message==='load'?'לא הצלחתי לטעון את קורא הקבצים. נסה שוב.':e&&e.message==='nocols'?'לא זיהיתי טבלת עסקאות בקובץ. נסה את קובץ האקסל המקורי מאתר חברת האשראי או הבנק.':'לא הצלחתי לקרוא את הקובץ.'; }
+    const byYm={};
+    tx.forEach(t=>{ const ym=t.d?t.d.slice(0,7):ymNow(); const g=byYm[ym]=byYm[ym]||{ym,total:0,cats:{},n:0,byM:{}}; const c=map[t.m]||'אחר'; g.cats[c]=(g.cats[c]||0)+t.a; g.byM[t.m]=(g.byM[t.m]||0)+t.a; g.total+=t.a; g.n++; });
+    const months=Object.values(byYm).sort((a,b)=>a.ym.localeCompare(b.ym)).map(g=>{ for(const k in g.cats) g.cats[k]=Math.round(g.cats[k]); return {ym:g.ym,total:Math.round(g.total),cats:g.cats,n:g.n,top:Object.entries(g.byM).sort((a,b)=>b[1]-a[1]).slice(0,3)}; });
+    impUI.res={months,files:files.length,bad,n:tx.length,total:Math.round(tx.reduce((s,t)=>s+t.a,0)),slips};
+  }catch(e){ impUI.error=e&&e.message==='load'?'לא הצלחתי לטעון את קורא הקבצים. בדוק חיבור לאינטרנט ונסה שוב.':e&&e.message==='nocols'?'לא זיהיתי עסקאות בקובץ. אפשר להעלות PDF של פירוט חיובים, או אקסל או CSV מאתר חברת האשראי או הבנק.':'לא הצלחתי לקרוא את הקובץ.'; }
   finally{ impUI.busy=false; if(view.name==='docs'){ render(); const c=document.getElementById('imp-card'); if(c&&(impUI.res||impUI.error)) c.scrollIntoView({behavior:'smooth',block:'start'}); } }
 }
 function saveImport(){
+  const r=impUI.res; if(!r) return; const t=totals();
+  r.months.forEach(g=>{
+    const ex=state.spend[g.ym]; let rec={total:g.total,cats:{...g.cats},n:g.n,ts:Date.now(),src:'import'};
+    if(ex&&impUI.mode==='add'&&ex.src!=='demo'){ rec.total+=ex.total||0; rec.n+=ex.n||0; for(const k in ex.cats||{}) rec.cats[k]=(rec.cats[k]||0)+ex.cats[k]; }
+    state.spend[g.ym]=rec;
+    if(g.ym!==ymNow()) state.history[g.ym]=Object.assign({inc:Math.round(t.income),fix:Math.round(t.expenses),nw:null,pf:null,sv:null,em:null,saved:0,score:0,scoreOf:0},state.history[g.ym]||{},{varx:Math.round(varPart(rec))});
+  });
+  (r.slips||[]).forEach((sl,i)=>{ if(sl.partial){ const pv=(document.getElementById('sl-p-'+i)||{}).value, nv=num((document.getElementById('sl-n-'+i)||{}).value); if(pv) sl.period=pv; if(nv!=null) sl.net=nv; } });
+  r.slips=(r.slips||[]).filter(sl=>sl.period&&sl.net!=null&&sl.net>0).sort((a,b)=>a.period.localeCompare(b.period));
+  (r.slips||[]).forEach(sl=>{
+    state.docs=state.docs.filter(d=>!(d.type==='payslip'&&d.period===sl.period));
+    const prev=state.docs.filter(d=>d.type==='payslip'&&d.period<sl.period&&d.fields&&d.fields.net).sort((a,b)=>b.period.localeCompare(a.period))[0];
+    const parts=[];
+    if(prev){ const dlt=sl.net-prev.fields.net; parts.push(Math.abs(dlt)<1?'הנטו זהה לחודש הקודם.':`הנטו ${dlt>0?'עלה':'ירד'} ב־${fmt(Math.abs(dlt))} לעומת ${monthLong(prev.period)}.`); if(sl.pension&&!(prev.fields.pensionEmployee)) parts.push('זה התלוש הראשון עם הפקדה לפנסיה.'); }
+    state.docs.unshift({id:uid(),ts:Date.now(),type:'payslip',title:'תלוש שכר',period:sl.period,issuer:null,
+      amounts:[{label:'נטו',value:sl.net},sl.mand!=null&&{label:'ניכויי חובה',value:sl.mand},sl.tax!=null&&{label:'מס הכנסה',value:sl.tax},sl.bl!=null&&{label:'ביטוח לאומי',value:sl.bl},sl.health!=null&&{label:'מס בריאות',value:sl.health},sl.pension!=null&&{label:'פנסיה (עובד)',value:sl.pension}].filter(Boolean),
+      insight:parts.join(' '),fields:{net:sl.net,incomeTax:sl.tax,bituachLeumi:sl.bl,pensionEmployee:sl.pension}});
+  });
+  if((r.slips||[]).length){ const last=r.slips[r.slips.length-1], newest=state.docs.filter(d=>d.type==='payslip').sort((a,b)=>b.period.localeCompare(a.period))[0];
+    if(newest&&newest.period===last.period) upsertItem('income','משכורת',last.net,1); }
+  const n=r.months.length+(r.slips||[]).length; impUI.res=null; save(); render(); toast(n===1?'נשמר':`נשמרו ${n} פריטים`);
+}
+function saveImportLegacy(){
   const r=impUI.res; if(!r) return; const ym=document.getElementById('imp-ym').value||r.ym;
   const ex=state.spend[ym]; let rec={total:r.total,cats:{...r.cats},n:r.n,ts:Date.now(),src:'import'};
   if(ex&&impUI.mode==='add'){ rec.total+=ex.total||0; rec.n+=ex.n||0; for(const k in ex.cats||{}) rec.cats[k]=(rec.cats[k]||0)+ex.cats[k]; }
@@ -1026,22 +1114,23 @@ function saveImport(){
 function importCard(){
   const r=impUI.res, sm=Object.keys(state.spend).sort().reverse().slice(0,6);
   return `<section class="panel" id="imp-card">
-    <h3>ייבוא פירוט אשראי או בנק</h3>
-    <p class="note" style="margin:-4px 0 12px">קובץ אקסל או CSV מאתר חברת האשראי או הבנק. האתר מסווג לקטגוריות ומחשב כמה הוצאת החודש.</p>
-    <label class="btn ghost" style="display:block;text-align:center" for="imp-file">📊 בחר קובץ</label>
-    <input id="imp-file" type="file" accept=".xlsx,.xls,.csv,text/csv" hidden onchange="importStatement(this)">
+    <h3>ייבוא פירוט אשראי ותלושים</h3>
+    <p class="note" style="margin:-4px 0 12px">PDF של פירוט חיובים (למשל מישראכרט) או של תלוש שכר, או אקסל או CSV מאתר חברת האשראי או הבנק. אפשר לבחור כמה קבצים יחד. האתר מסווג לקטגוריות ומחשב כמה הוצאת בכל חודש.</p>
+    <label class="btn ghost" style="display:block;text-align:center" for="imp-file">📊 בחר קבצים</label>
+    <input id="imp-file" type="file" multiple accept=".pdf,application/pdf,.xlsx,.xls,.csv,text/csv" hidden onchange="importStatement(this)">
     ${impUI.busy?`<p class="status"><span class="dots">קורא ומסווג</span></p>`:''}
     ${impUI.error?`<p class="status err">${esc(impUI.error)}</p>`:''}
     ${r?`<div class="result">
-      <div class="two-f"><div class="field"><label for="imp-ym">חודש</label><select id="imp-ym">${[...new Set(r.months.concat([r.ym]))].sort().reverse().map(m=>`<option value="${m}" ${m===r.ym?'selected':''}>${esc(monthLong(m))}</option>`).join('')}</select></div>
-      <div class="field"><label for="imp-mode">אם כבר יש נתונים לחודש</label><select id="imp-mode" onchange="impUI.mode=this.value"><option value="replace" ${impUI.mode==='replace'?'selected':''}>להחליף</option><option value="add" ${impUI.mode==='add'?'selected':''}>להוסיף (כרטיס נוסף)</option></select></div></div>
-      <div class="kv" style="margin-bottom:10px"><div><span>סה״כ</span><b>${N(fmt(r.total))}</b></div><div><span>עסקאות</span><b>${N(r.n)}</b></div></div>
-      ${catBars(r.cats)}
-      <p class="note">הכי הרבה כסף הלך ל: ${r.top.map(([m,v])=>`${esc(m)} (${fmt(v)})`).join(', ')}. שמות בתי העסק לא נשמרים.</p>
-      <div class="btn-row" style="margin-top:12px"><button class="btn primary" onclick="saveImport()">שמור את הסיכום</button><button class="btn ghost" onclick="impUI.res=null;render()">בטל</button></div>
+      ${(r.slips||[]).length?`<h4 style="margin:0 0 6px;font-size:15px">💼 תלושי שכר</h4>${r.slips.map((sl,i)=>sl.partial?`<div class="plan" style="margin:8px 0"><b>תלוש שכר: חלק מהמספרים לא נקראו מהקובץ. השלם את החודש והנטו:</b><div class="two-f" style="margin-top:8px"><div class="field" style="margin:0"><label for="sl-p-${i}">חודש התלוש</label><input id="sl-p-${i}" type="month" value="${sl.period||''}"></div><div class="field" style="margin:0"><label for="sl-n-${i}">שכר נטו (₪)</label><input id="sl-n-${i}" type="number" inputmode="decimal" value="${sl.net??''}"></div></div></div>`:`<div class="dl"><div class="t"><b>${esc(monthLong(sl.period))}</b><span>${sl.tax!=null?`מס הכנסה ${N(fmt(sl.tax))} · `:''}${sl.bl!=null?`ביטוח לאומי ${N(fmt(sl.bl))}`:''}${sl.pension?` · פנסיה ${N(fmt(sl.pension))}`:''}</span></div><span class="chip ok">נטו ${N(fmt(sl.net))}</span></div>`).join('')}<p class="note">ההכנסה ״משכורת״ תתעדכן לנטו של התלוש האחרון.</p>`:''}
+      ${r.n?`<div class="kv" style="margin:10px 0"><div><span>סה״כ</span><b>${N(fmt(r.total))}</b></div><div><span>עסקאות</span><b>${N(r.n)}</b></div></div>`:''}
+      ${r.months.map(g=>`<div style="margin:12px 0 4px;display:flex;justify-content:space-between;align-items:baseline"><b>${esc(monthLong(g.ym))}</b><span class="note" style="margin:0">${N(g.n)} עסקאות · ${N(fmt(g.total))}${state.spend[g.ym]&&state.spend[g.ym].src!=='demo'?' · כבר יש נתונים':''}</span></div>${catBars(g.cats,4)}`).join('')}
+      ${r.bad.length?`<p class="status err">לא זיהיתי עסקאות ב: ${r.bad.map(esc).join(', ')}</p>`:''}
+      ${r.months.some(g=>state.spend[g.ym]&&state.spend[g.ym].src!=='demo')?`<div class="field" style="margin-top:12px"><label for="imp-mode">בחודשים שכבר יש בהם נתונים</label><select id="imp-mode" onchange="impUI.mode=this.value"><option value="replace" ${impUI.mode==='replace'?'selected':''}>להחליף</option><option value="add" ${impUI.mode==='add'?'selected':''}>להוסיף (כרטיס נוסף)</option></select></div>`:''}
+      <p class="note">החודש נקבע לפי תאריך הרכישה. שמות בתי העסק לא נשמרים, רק סכומים לפי קטגוריה.</p>
+      <div class="btn-row" style="margin-top:12px"><button class="btn primary" onclick="saveImport()">${r.months.length+(r.slips||[]).length>1?`שמור ${r.months.length+(r.slips||[]).length} פריטים`:'שמור'}</button><button class="btn ghost" onclick="impUI.res=null;render()">בטל</button></div>
     </div>`:''}
     ${sm.length?`<h4 style="margin:16px 0 4px;font-size:14px">חודשים שיובאו</h4>${sm.map(k=>`<div class="dl"><div class="t"><b>${esc(monthLong(k))}</b><span>${N(state.spend[k].n||0)} עסקאות</span></div><span class="chip mute">${N(fmt(state.spend[k].total))}</span></div>`).join('')}`:''}
-    <p class="note">🔒 הקובץ נקרא במכשיר ולא נשמר. שמות בתי עסק שלא זוהו נשלחים ל־Claude רק לצורך סיווג. נשמרים רק סכומים לפי קטגוריה.</p>
+    <p class="note">🔒 הקובץ נקרא במכשיר שלך ולא נשמר ולא נשלח לשום מקום${sampleFn?', חוץ משמות בתי עסק שלא זוהו, שנשלחים ל־Claude רק לצורך סיווג':''}. נשמרים רק סכומים לפי קטגוריה.</p>
   </section>`;
 }
 
@@ -1780,7 +1869,7 @@ function docsView(){
           <b>${docUI.file?esc(docUI.file.name):'צלם, בחר תמונה או קובץ אקסל'}</b>
           <span>תלוש, חשבון, קבלה, דוח פנסיה, מכתב או פירוט אשראי. האתר מזהה לבד מה זה ומעדכן את המקום הנכון.</span>
         </label>
-        <input id="doc-file" type="file" accept="${sampleImgs?esc(sampleImgs.mediaTypes.join(',')):'image/*'},.xlsx,.xls,.csv" hidden onchange="pickDoc(this)">
+        <input id="doc-file" type="file" accept="${sampleImgs?esc(sampleImgs.mediaTypes.join(',')):'image/*'},.pdf,application/pdf,.xlsx,.xls,.csv" multiple hidden onchange="pickDoc(this)">
         <div class="btn-row" style="margin-top:12px"><button class="btn primary" ${!docUI.file||docUI.busy||!avail?'disabled':''} onclick="scanDoc()">קרא את המסמך</button>${docUI.busy?`<button class="btn ghost" onclick="docCtl&&docCtl.abort()">עצור</button>`:''}</div>
         ${!avail?`<p class="status">באתר הזה אפשר לייבא פירוט אשראי מאקסל, והסיווג נעשה לפי שמות בתי העסק. קריאת צילומים בעזרת Claude פועלת בגרסה שבתוך Claude.</p>`:''}
         ${docUI.busy?`<p class="status"><span class="dots">קורא את ה${esc(DOC_TYPES[docUI.type].label)}</span></p>`:''}
@@ -1799,7 +1888,7 @@ function docsView(){
     </div>
   </div>`;
 }
-function pickDoc(inp){ const f=inp.files[0]; if(!f) return; if(/\.(xlsx|xls|csv)$/i.test(f.name)){ inp.value=''; importFile(f); return; } if(docUI.url) URL.revokeObjectURL(docUI.url); docUI.file=f; docUI.url=URL.createObjectURL(f); docUI.result=null; docUI.error=''; docUI.done=false; render(); }
+function pickDoc(inp){ const f=inp.files[0]; if(!f) return; if(/\.(xlsx|xls|csv|pdf)$/i.test(f.name)||f.type==='application/pdf'){ const fs=[...inp.files]; inp.value=''; importFiles(fs); return; } if(docUI.url) URL.revokeObjectURL(docUI.url); docUI.file=f; docUI.url=URL.createObjectURL(f); docUI.result=null; docUI.error=''; docUI.done=false; render(); }
 const DOC_SCHEMA={
   payslip:'{"gross":number|null,"net":number|null,"incomeTax":number|null,"bituachLeumi":number|null,"pensionEmployee":number|null,"pensionEmployer":number|null,"hishtalmut":number|null,"creditPoints":number|null}',
   pension:'{"kind":"pension"|"hishtalmut"|"gemel","fundName":string|null,"balance":number|null,"depositFeePct":number|null,"accumFeePct":number|null,"monthlyDeposit":number|null,"yearReturnPct":number|null}',
