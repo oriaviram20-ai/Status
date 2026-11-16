@@ -701,7 +701,7 @@ function normalize(s){
   s.reqOff=s.reqOff||{}; s.autoLog=s.autoLog||[];
   s.fx=Object.assign({usd:3.11,src:'default',d:''},s.fx||{}); s.prefs=Object.assign({lazy:false},s.prefs||{});
   s.investPlan=Object.assign({monthly:0,years:25,ret:5},s.investPlan||{});
-  s.tx=s.tx||[]; s.rules=s.rules||{}; s.budget=s.budget||{}; s.debts=s.debts||[]; s.fgoals=s.fgoals||[]; s.wb=s.wb||[]; s.fi=s.fi||null;
+  s.tx=s.tx||[]; s.splitwise=s.splitwise||{}; s.rules=s.rules||{}; s.budget=s.budget||{}; s.debts=s.debts||[]; s.fgoals=s.fgoals||[]; s.wb=s.wb||[]; s.fi=s.fi||null;
   s.prefs=Object.assign({mode:'adv',theme:'auto',size:'n',privacy:false,contrast:false,motion:false,readable:false},s.prefs);
   return s;
 }
@@ -1214,19 +1214,19 @@ async function sheetTx(f){
 async function importFiles(files){
   impUI.busy=true; impUI.error=''; impUI.res=null; render();
   try{
-    let tx=[], bad=[], slips=[];
+    let tx=[], bad=[], slips=[], sws=[];
     for(const f of files){
       try{
         if(/\.pdf$/i.test(f.name)||f.type==='application/pdf'){
           const items=await pdfItems(f), sl=parsePayslip(items);
           if(sl){ slips.push(sl); continue; }
           const t=parseStatementRows(pdfRows(items)); if(t.length) tx=tx.concat(t); else bad.push(f.name);
-        } else { const t=await sheetTx(f); if(t.length) tx=tx.concat(t); else bad.push(f.name); }
+        } else { const sw=await swFile(f); if(sw){ sw.k=Math.max(0,sw.members.indexOf(state.prefs.swName)); sws.push(sw); continue; } const t=await sheetTx(f); if(t.length) tx=tx.concat(t); else bad.push(f.name); }
       }catch(e){ if(e&&e.message==='load') throw e; bad.push(f.name); }
     }
     slips.sort((a,b)=>(a.period||'').localeCompare(b.period||''));
-    if(!tx.length&&!slips.length) throw new Error('nocols');
-    if(!tx.length){ impUI.res={months:[],files:files.length,bad,n:0,total:0,slips}; return; }
+    if(!tx.length&&!slips.length&&!sws.length) throw new Error('nocols');
+    if(!tx.length){ impUI.res={months:[],files:files.length,bad,n:0,total:0,slips,sw:sws}; return; }
     const map={}, unknown=[];
     [...new Set(tx.map(t=>t.m))].forEach(m=>{ const c=catFor(m); if(c) map[m]=c; else unknown.push(m); });
     if(unknown.length&&sampleFn){
@@ -1236,10 +1236,85 @@ async function importFiles(files){
     const byYm={};
     tx.forEach(t=>{ const ym=t.d?t.d.slice(0,7):ymNow(); const g=byYm[ym]=byYm[ym]||{ym,total:0,cats:{},n:0,byM:{}}; const c=map[t.m]||'אחר'; g.cats[c]=(g.cats[c]||0)+t.a; g.byM[t.m]=(g.byM[t.m]||0)+t.a; g.total+=t.a; g.n++; });
     const months=Object.values(byYm).sort((a,b)=>a.ym.localeCompare(b.ym)).map(g=>{ for(const k in g.cats) g.cats[k]=Math.round(g.cats[k]); return {ym:g.ym,total:Math.round(g.total),cats:g.cats,n:g.n,top:Object.entries(g.byM).sort((a,b)=>b[1]-a[1]).slice(0,3)}; });
-    impUI.res={months,files:files.length,bad,n:tx.length,total:Math.round(tx.reduce((s,t)=>s+t.a,0)),slips,tx:tx.map(t=>({d:t.d||today(),m:t.m,a:R2(t.a),c:map[t.m]||'אחר',un:!map[t.m]||unknown.includes(t.m)}))};
+    impUI.res={months,files:files.length,bad,n:tx.length,total:Math.round(tx.reduce((s,t)=>s+t.a,0)),slips,tx:tx.map(t=>({d:t.d||today(),m:t.m,a:R2(t.a),c:map[t.m]||'אחר',un:!map[t.m]||unknown.includes(t.m)})),sw:sws};
   }catch(e){ impUI.error=e&&e.message==='load'?'לא הצלחתי לטעון את קורא הקבצים. בדוק חיבור לאינטרנט ונסה שוב.':e&&e.message==='nocols'?'לא זיהיתי עסקאות בקובץ. אפשר להעלות PDF של פירוט חיובים, או אקסל או CSV מאתר חברת האשראי או הבנק.':'לא הצלחתי לקרוא את הקובץ.'; }
   finally{ impUI.busy=false; if(view.name==='docs'){ render(); const c=document.getElementById('imp-card'); if(c&&(impUI.res||impUI.error)) c.scrollIntoView({behavior:'smooth',block:'start'}); } }
 }
+/* ---------- Splitwise (CSV export of a group) ---------- */
+const SW_CAT=[[/grocer|מכולת|סופר/i,'סופר ומכולת'],[/dining|restaurant|liquor|food|מסעד|אוכל|אלכוהול/i,'מסעדות וקפה'],
+  [/plane|hotel|flight|טיס|מלון/i,'חופשות וטיסות'],[/gas\/fuel|fuel|parking|car|taxi|bus|train|bicycle|transport|דלק|חני|מונית|תחבור|רכב/i,'תחבורה ודלק'],
+  [/game|movie|music|sport|entertain|בילוי|סרט|ספורט|הופע/i,'בילוי ופנאי'],[/clothing|gift|ביגוד|מתנ/i,'קניות וביגוד'],[/medical|health|רפוא|בריאות/i,'בריאות וטיפוח'],
+  [/rent|mortgage|household|furniture|maintenance|pets|services|electric|heat|water|tv|phone|internet|clean|trash|utilit|שכיר|בית|חשמל|מים|ניקיון|ארנונה/i,'דיור ובית']];
+const SW_PAY=/^(payment|תשלום|zahlung|pago|paiement)$/i;
+function swRows(rows){
+  const h=rows.findIndex(r=>{ const L=r.map(x=>String(x).trim().toLowerCase()); return (L.includes('date')||L.includes('תאריך'))&&(L.includes('cost')||L.includes('עלות')); });
+  if(h<0) return null;
+  const H=rows[h].map(x=>String(x).trim()), L=H.map(x=>x.toLowerCase()), ix=(...k)=>L.findIndex(x=>k.includes(x));
+  const di=ix('date','תאריך'), de=ix('description','תיאור'), ca=ix('category','קטגוריה'), co=ix('cost','עלות'), cu=ix('currency','מטבע');
+  if(di<0||de<0||co<0) return null;
+  const start=Math.max(di,de,ca,co,cu)+1, members=H.slice(start).map((n,i)=>({n,i:start+i})).filter(m=>m.n);
+  if(!members.length) return null;
+  const out=[]; let balance=null;
+  for(let r=h+1;r<rows.length;r++){
+    const row=rows[r]; if(!row||row.every(x=>String(x).trim()==='')) continue;
+    const desc=String(row[de]||'').trim();
+    if(/total balance|יתרה כוללת|סה.?כ/i.test(desc)||(!String(row[di]||'').trim()&&desc)){ balance=members.map(m=>parseAmount(row[m.i])||0); continue; }
+    const dv=row[di], d=dv instanceof Date?isoLocal(dv):/^\d{4}-\d{2}-\d{2}/.test(String(dv).trim())?String(dv).trim().slice(0,10):parseDate(dv), cost=parseAmount(row[co]); if(!d||!isFinite(cost)) continue;
+    out.push({d,m:desc.slice(0,60)||'Splitwise',cat:String(row[ca]||'').trim(),cost,cur:String(row[cu]||'ILS').trim().toUpperCase(),v:members.map(m=>parseAmount(row[m.i])||0)});
+  }
+  if(!out.length) return null;
+  if(!balance) balance=members.map((_,k)=>out.reduce((a,x)=>a+x.v[k],0));
+  return {members:members.map(m=>m.n),rows:out,balance};
+}
+async function swFile(f){
+  if(/\.pdf$/i.test(f.name)) return null;
+  const XLSX=await loadXLSX(); let wb;
+  if(/\.csv$/i.test(f.name)||f.type==='text/csv'){ const buf=await f.arrayBuffer(); let txt=new TextDecoder('utf-8').decode(buf); if(txt.includes('�')) txt=new TextDecoder('windows-1255').decode(buf); wb=XLSX.read(txt,{type:'string',cellDates:true,raw:true}); }
+  else wb=XLSX.read(await f.arrayBuffer(),{type:'array',cellDates:true});
+  for(const name of wb.SheetNames){ const g=swRows(XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:true,defval:''})); if(g){ g.file=f.name.replace(/\.(csv|xlsx?)$/i,'').replace(/_?\d{4}-\d{2}-\d{2}.*$/,'').replace(/[_-]+/g,' ').trim().slice(0,40)||'Splitwise'; return g; } }
+  return null;
+}
+function swRate(cur){ if(/^(ILS|NIS|₪|ש"ח|שח)$/.test(cur)||!cur) return 1; if(cur==='USD') return state.fx.usd||null; if(cur==='EUR') return (typeof market!=='undefined'&&market&&market.fx&&market.fx.eur)||null; return null; }
+function swCat(x){ for(const [re,c] of SW_CAT) if(re.test(x.cat)) return c; return catFor(x.m)||'אחר'; }
+/* Turns one group into transactions for the chosen member.
+   I paid (my value > 0): the card already shows the full cost, so add a negative line for what friends owe me.
+   Friends paid (my value < 0): add my share as an expense. Payments between friends are settlements and are skipped. */
+function swPlan(g,k,cardHasMine){
+  const tx=[]; let share=0,back=0,pays=0,foreign=0,skip=0;
+  g.rows.forEach(x=>{
+    if(SW_PAY.test(x.cat)||/ paid /i.test(x.m)&&!x.cat){ pays++; return; }
+    const rate=swRate(x.cur); if(rate==null){ foreign++; return; }
+    const me=x.v[k]*rate, cost=x.cost*rate, others=x.v.some((v,i)=>i!==k&&Math.abs(v)>0.004), c=swCat(x), key=`sw:${g.file}|${x.d}|${x.m}|${x.cost}`;
+    if(Math.abs(me)<0.005){ if(!others&&!cardHasMine){ tx.push({d:x.d,m:x.m,a:R2(cost),c,key}); share+=cost; } else skip++; return; }
+    if(me>0){ const mine=cost-me; share+=mine; if(cardHasMine){ tx.push({d:x.d,m:`${x.m} · חברים מחזירים`,a:R2(-me),c,key}); back+=me; } else tx.push({d:x.d,m:x.m,a:R2(mine),c,key}); }
+    else { tx.push({d:x.d,m:x.m,a:R2(-me),c,key}); share+=-me; }
+  });
+  return {tx,share,back,pays,foreign,skip,bal:(g.balance[k]||0)};
+}
+function swSel(i,k){ const r=impUI.res; r.sw[i].k=+k; state.prefs.swName=r.sw[i].members[+k]; render(); }
+function swHTML(r){
+  if(!(r.sw||[]).length) return '';
+  return `<h4 style="margin:4px 0 6px;font-size:15px">🤝 Splitwise</h4>`+r.sw.map((g,i)=>{ const P=swPlan(g,g.k,impUI.swCard!==false);
+    return `<div class="plan" style="margin:8px 0"><b>${esc(g.file)}</b> · ${N(g.rows.length)} שורות
+      <div class="field" style="margin:8px 0 0"><label for="sw-k-${i}">מי אתה בקבוצה?</label><select id="sw-k-${i}" onchange="swSel(${i},this.value)">${g.members.map((m,k)=>`<option value="${k}" ${k===g.k?'selected':''}>${esc(m)}</option>`).join('')}</select></div>
+      <div class="kv" style="margin:10px 0"><div><span>החלק שלך</span><b>${N(fmt(P.share))}</b></div><div><span>${P.bal>=0?'חייבים לך':'אתה חייב'}</span><b class="${P.bal<0?'down':'up'}">${N(fmt(Math.abs(P.bal)))}</b></div></div>
+      <p class="note" style="margin:0">${N(P.tx.length)} תנועות ייכנסו${P.back?` (מתוכן החזרים מחברים של ${N(fmt(P.back))})`:''}${P.pays?` · ${N(P.pays)} העברות בין חברים לא נספרות`:''}${P.foreign?` · ${N(P.foreign)} במטבע שאין לו שער, דולגו`:''}.</p></div>`; }).join('')+
+    `<label class="check-row"><input type="checkbox" ${impUI.swCard!==false?'checked':''} onchange="impUI.swCard=this.checked;render()">מה ששילמתי בעצמי כבר מופיע בפירוט האשראי</label>
+     <p class="note" style="margin-top:4px">כשאתה משלם על כולם, בפירוט מופיע הסכום המלא, אז האתר מוסיף שורה שלילית בגובה מה שהחברים מחזירים. כשחבר שילם, נכנס רק החלק שלך. כך ההוצאות מראות רק את מה שבאמת עלה לך.</p>`;
+}
+function swSave(r){
+  const yms=new Set(); let n=0;
+  (r.sw||[]).forEach(g=>{ const P=swPlan(g,g.k,impUI.swCard!==false), keys=new Set(P.tx.map(t=>t.key));
+    state.tx.filter(t=>t.swk&&(keys.has(t.swk)||t.swk.startsWith(`sw:${g.file}|`)&&P.tx.some(x=>x.d.slice(0,7)===t.d.slice(0,7)))).forEach(t=>yms.add(t.d.slice(0,7)));
+    state.tx=state.tx.filter(t=>!(t.swk&&(keys.has(t.swk)||t.swk.startsWith(`sw:${g.file}|`)&&P.tx.some(x=>x.d.slice(0,7)===t.d.slice(0,7)))));
+    P.tx.forEach(x=>{ const ym=x.d.slice(0,7); ensureBase(ym); state.tx.push({id:uid(),d:x.d,m:x.m,a:x.a,c:x.c,tags:['splitwise'],note:g.file,rev:false,ex:false,split:[],src:'splitwise',swk:x.key}); yms.add(ym); n++; });
+    state.splitwise=state.splitwise||{}; state.splitwise[g.file]={me:g.members[g.k],bal:Math.round(P.bal),d:today()};
+  });
+  yms.forEach(recomputeSpend); return n;
+}
+function swBalHTML(){ const E=Object.entries(state.splitwise||{}); if(!E.length) return '';
+  return `<section class="panel" style="padding-block:14px"><h3 style="margin-bottom:4px">🤝 Splitwise <button onclick="quickScan('import')">עדכון ←</button></h3>${E.map(([g,x])=>`<div class="dl"><div class="t"><b>${esc(g)}</b><span>${esc(x.me)} · עודכן ${shortDate(x.d)}</span></div><b class="${x.bal<0?'down':'up'}">${Math.abs(x.bal)<1?'מאוזן ✓':N((x.bal>0?'חייבים לך ':'אתה חייב ')+fmt(Math.abs(x.bal)))}</b></div>`).join('')}</section>`; }
+
 function saveImport(){
   const r=impUI.res; if(!r) return; const t=totals();
   const add=impUI.mode==='add';
@@ -1266,7 +1341,7 @@ function saveImport(){
   });
   if((r.slips||[]).length){ const last=r.slips[r.slips.length-1], newest=state.docs.filter(d=>d.type==='payslip').sort((a,b)=>b.period.localeCompare(a.period))[0];
     if(newest&&newest.period===last.period) upsertItem('income','משכורת',last.net,1); }
-  const n=r.months.length+(r.slips||[]).length; impUI.res=null; save(); render(); toast(n===1?'נשמר':`נשמרו ${n} פריטים`);
+  const swn=swSave(r); const n=r.months.length+(r.slips||[]).length; impUI.res=null; save(); render(); toast(swn&&!n?`נשמרו ${swn} תנועות מ־Splitwise`:n===1&&!swn?'נשמר':'נשמר');
 }
 function saveImportLegacy(){
   const r=impUI.res; if(!r) return; const ym=document.getElementById('imp-ym').value||r.ym;
@@ -1279,23 +1354,24 @@ function saveImportLegacy(){
 function importCard(){
   const r=impUI.res, sm=Object.keys(state.spend).sort().reverse().slice(0,6);
   return `<section class="panel" id="imp-card">
-    <h3>ייבוא פירוט אשראי ותלושים</h3>
-    <p class="note" style="margin:-4px 0 12px">PDF של פירוט חיובים (למשל מישראכרט) או של תלוש שכר, או אקסל או CSV מאתר חברת האשראי או הבנק. אפשר לבחור כמה קבצים יחד. האתר מסווג לקטגוריות ומחשב כמה הוצאת בכל חודש.</p>
+    <h3>ייבוא פירוט, תלושים ו־Splitwise</h3>
+    <p class="note" style="margin:-4px 0 12px">PDF של פירוט חיובים (למשל מישראכרט) או של תלוש שכר, או אקסל או CSV מאתר חברת האשראי או הבנק, או קובץ ייצוא של קבוצה מ־Splitwise. אפשר לבחור כמה קבצים יחד. האתר מסווג לקטגוריות ומחשב כמה הוצאת בכל חודש.</p>
     <label class="btn ghost" style="display:block;text-align:center" for="imp-file">📊 בחר קבצים</label>
     <input id="imp-file" type="file" multiple accept=".pdf,application/pdf,.xlsx,.xls,.csv,text/csv" hidden onchange="importStatement(this)">
     ${impUI.busy?`<p class="status"><span class="dots">קורא ומסווג</span></p>`:''}
     ${impUI.error?`<p class="status err">${esc(impUI.error)}</p>`:''}
     ${r?`<div class="result">
       ${(r.slips||[]).length?`<h4 style="margin:0 0 6px;font-size:15px">💼 תלושי שכר</h4>${r.slips.map((sl,i)=>sl.partial?`<div class="plan" style="margin:8px 0"><b>תלוש שכר: חלק מהמספרים לא נקראו מהקובץ. השלם את החודש והנטו:</b><div class="two-f" style="margin-top:8px"><div class="field" style="margin:0"><label for="sl-p-${i}">חודש התלוש</label><input id="sl-p-${i}" type="month" value="${sl.period||''}"></div><div class="field" style="margin:0"><label for="sl-n-${i}">שכר נטו (₪)</label><input id="sl-n-${i}" type="number" inputmode="decimal" value="${sl.net??''}"></div></div></div>`:`<div class="dl"><div class="t"><b>${esc(monthLong(sl.period))}</b><span>${sl.tax!=null?`מס הכנסה ${N(fmt(sl.tax))} · `:''}${sl.bl!=null?`ביטוח לאומי ${N(fmt(sl.bl))}`:''}${sl.pension?` · פנסיה ${N(fmt(sl.pension))}`:''}</span></div><span class="chip ok">נטו ${N(fmt(sl.net))}</span></div>`).join('')}<p class="note">ההכנסה ״משכורת״ תתעדכן לנטו של התלוש האחרון.</p>`:''}
+      ${swHTML(r)}
       ${r.n?`<div class="kv" style="margin:10px 0"><div><span>סה״כ</span><b>${N(fmt(r.total))}</b></div><div><span>עסקאות</span><b>${N(r.n)}</b></div></div>`:''}
       ${r.months.map(g=>`<div style="margin:12px 0 4px;display:flex;justify-content:space-between;align-items:baseline"><b>${esc(monthLong(g.ym))}</b><span class="note" style="margin:0">${N(g.n)} עסקאות · ${N(fmt(g.total))}${state.spend[g.ym]&&state.spend[g.ym].src!=='demo'?' · כבר יש נתונים':''}</span></div>${catBars(g.cats,4)}`).join('')}
       ${r.bad.length?`<p class="status err">לא זיהיתי עסקאות ב: ${r.bad.map(esc).join(', ')}</p>`:''}
       ${r.months.some(g=>state.spend[g.ym]&&state.spend[g.ym].src!=='demo')?`<div class="field" style="margin-top:12px"><label for="imp-mode">בחודשים שכבר יש בהם נתונים</label><select id="imp-mode" onchange="impUI.mode=this.value"><option value="replace" ${impUI.mode==='replace'?'selected':''}>להחליף</option><option value="add" ${impUI.mode==='add'?'selected':''}>להוסיף (כרטיס נוסף)</option></select></div>`:''}
-      <p class="note">החודש נקבע לפי תאריך הרכישה. שמות בתי העסק לא נשמרים, רק סכומים לפי קטגוריה.</p>
-      <div class="btn-row" style="margin-top:12px"><button class="btn primary" onclick="saveImport()">${r.months.length+(r.slips||[]).length>1?`שמור ${r.months.length+(r.slips||[]).length} פריטים`:'שמור'}</button><button class="btn ghost" onclick="impUI.res=null;render()">בטל</button></div>
+      ${r.n?'<p class="note">החודש נקבע לפי תאריך הרכישה. כל עסקה נשמרת ב״תנועות״ עם בית העסק, הסכום והקטגוריה.</p>':''}
+      <div class="btn-row" style="margin-top:12px"><button class="btn primary" onclick="saveImport()">שמור</button><button class="btn ghost" onclick="impUI.res=null;render()">בטל</button></div>
     </div>`:''}
     ${sm.length?`<h4 style="margin:16px 0 4px;font-size:14px">חודשים שיובאו</h4>${sm.map(k=>`<div class="dl"><div class="t"><b>${esc(monthLong(k))}</b><span>${N(state.spend[k].n||0)} עסקאות</span></div><span class="chip mute">${N(fmt(state.spend[k].total))}</span></div>`).join('')}`:''}
-    <p class="note">🔒 הקובץ נקרא במכשיר שלך ולא נשמר ולא נשלח לשום מקום${sampleFn?', חוץ משמות בתי עסק שלא זוהו, שנשלחים ל־Claude רק לצורך סיווג':''}. נשמרים רק סכומים לפי קטגוריה.</p>
+    <p class="note">🔒 הקובץ נקרא במכשיר שלך ולא נשמר ולא נשלח לשום מקום${sampleFn?', חוץ משמות בתי עסק שלא זוהו, שנשלחים ל־Claude רק לצורך סיווג':''}. נשמרים תאריך, בית עסק, סכום וקטגוריה, בלי מספרי כרטיס או חשבון.</p>
   </section>`;
 }
 
@@ -1704,6 +1780,7 @@ function txView(){
     <div class="kc"><small>הכי גדולה</small><b>${big?N(fmt(big.a)):'—'}</b><span class="s">${big?esc(big.m):''}</span></div>
     <button class="kc" onclick="txUI.rev=!txUI.rev;render()"><small>לבדיקה</small><b>${N(revN)}</b><span class="s">${revN?(txUI.rev?'מציג רק אותן':'לחץ כדי לסנן'):'הכל מסווג ✓'}</span></button>
   </div>
+  ${swBalHTML()}
   <section class="panel">
     <div class="txf">
       <input id="tx-q" type="search" placeholder="חיפוש: בית עסק, תגית, הערה או סכום" value="${esc(txUI.q)}" oninput="txUI.q=this.value;document.getElementById('tx-list').innerHTML=txListHTML()" aria-label="חיפוש תנועות">
