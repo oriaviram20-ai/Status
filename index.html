@@ -543,6 +543,7 @@ details.guide p{margin:10px 0 2px;color:var(--ink);font-size:15px;line-height:1.
 body.rf{font-family:Arial,"Segoe UI",system-ui,sans-serif;letter-spacing:.015em;line-height:1.7}
 body.hc{--muted:color-mix(in srgb,var(--ink) 82%,var(--bg));--line:color-mix(in srgb,var(--ink) 38%,var(--bg));--track:color-mix(in srgb,var(--ink) 22%,var(--bg))}
 body.hc .chip,body.hc .btn.ghost{border:1px solid var(--line)}
+a.btn{text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:6px}
 </style>
 </head>
 <body>
@@ -701,7 +702,7 @@ function normalize(s){
   s.reqOff=s.reqOff||{}; s.autoLog=s.autoLog||[];
   s.fx=Object.assign({usd:3.11,src:'default',d:''},s.fx||{}); s.prefs=Object.assign({lazy:false},s.prefs||{});
   s.investPlan=Object.assign({monthly:0,years:25,ret:5},s.investPlan||{});
-  s.tx=s.tx||[]; s.splitwise=s.splitwise||{}; s.rules=s.rules||{}; s.budget=s.budget||{}; s.debts=s.debts||[]; s.fgoals=s.fgoals||[]; s.wb=s.wb||[]; s.fi=s.fi||null;
+  s.tx=s.tx||[]; s.splitwise=s.splitwise||{}; s.instinct=Object.assign({on:false,folderId:null,sheetId:null,files:{},lastSync:0,tasks:[],notes:[],log:[]},s.instinct||{}); s.rules=s.rules||{}; s.budget=s.budget||{}; s.debts=s.debts||[]; s.fgoals=s.fgoals||[]; s.wb=s.wb||[]; s.fi=s.fi||null;
   s.prefs=Object.assign({mode:'adv',theme:'auto',size:'n',privacy:false,contrast:false,motion:false,readable:false},s.prefs);
   return s;
 }
@@ -1946,7 +1947,7 @@ function budgetView(){
 /* ---- more ---- */
 function moreView(){
   const L=[['goals','🎯','מדדים ואתגרים','איפה אתה עומד'],['invest','📈','השקעות','תיק ומחירים חיים'],['savings','🏦','חיסכון ופנסיה','קרנות וקופות'],['future','🔭','העתיד שלך','הון נטו, חופש כלכלי, יעדים'],
-    ['deadlines','🗂️','ניהול','מועדים וצ׳קליסט שנתי'],['docs','📄','מסמכים וייבוא','סריקה, פירוט, תלושים'],['auto','⚙️','אוטומציה','מה מתעדכן לבד'],['year','📊','סיכום שנה','השנה במספרים'],
+    ['deadlines','🗂️','ניהול','מועדים וצ׳קליסט שנתי'],['docs','📄','מסמכים וייבוא','סריקה, פירוט, תלושים'],['instinct','🤖','Instinct','מסמכים אוטומטית דרך הדרייב'],['auto','⚙️','אוטומציה','מה מתעדכן לבד'],['year','📊','סיכום שנה','השנה במספרים'],
     ['tools','🧮','מחשבונים','משכנתא, נטו, חובות ועוד'],['learn','📚','מדריכים','ומילון מונחים'],['wb','💚','בדיקת רווחה','10 שאלות, פעם ברבעון'],['recap','🎞️','הסיכום החודשי','שקפים לשמירה'],
     ['widgets','▦','ווידג׳טים','לפי מסך הבית'],['settings','🎛️','הגדרות','מצב פשוט, תצוגה, נגישות']];
   return `<div class="page-head"><div><h1>עוד</h1><p>כל האזורים של Status</p></div></div>
@@ -2225,8 +2226,193 @@ function monthPanel(){
   </section>`;
 }
 
+/* ---------- Instinct sync through Google Drive ----------
+   Instinct (the WhatsApp assistant) and Status meet in the user's Google Drive:
+   - a folder "Status Inbox" where Instinct drops monthly files (statements, payslips, Splitwise CSV)
+   - a sheet "Status · משימות ל־Instinct": tab "משימות" is written by the site, tab "מ־Instinct" is written by Instinct.
+   The site reads with the user's own Google sign-in. Nothing goes through any other server. */
+const IN_FOLDER='Status Inbox', IN_SHEET='Status · משימות ל־Instinct', T_TASKS='משימות', T_FROM='מ־Instinct';
+const GAPI='https://www.googleapis.com', SAPI='https://sheets.googleapis.com/v4/spreadsheets';
+const inUI={busy:false,msg:'',err:'',skipped:[]};
+const qs=o=>Object.entries(o).map(([k,v])=>k+'='+encodeURIComponent(v)).join('&');
+async function gfetch(tok,url,opt={}){
+  const h={Authorization:'Bearer '+tok}; if(typeof opt.body==='string') h['Content-Type']='application/json';
+  const r=await fetch(url.startsWith('http')?url:GAPI+url,{method:opt.method||'GET',body:opt.body,headers:h});
+  if(!r.ok){ let m=''; try{ const j=await r.json(); m=j.error&&(j.error.message||j.error.status)||''; }catch(e){} const e=new Error(m||('HTTP '+r.status)); e.status=r.status; throw e; }
+  return opt.blob?r.blob():r.status===204?null:r.json();
+}
+const sheetRange=(t,r)=>`'${t}'!${r}`;
+async function sheetGet(tok,id,range){ const j=await gfetch(tok,`${SAPI}/${id}/values/${encodeURIComponent(range)}`); return j.values||[]; }
+async function sheetPut(tok,id,range,values){ return gfetch(tok,`${SAPI}/${id}/values/${encodeURIComponent(range)}?valueInputOption=RAW`,{method:'PUT',body:JSON.stringify({range,values})}); }
+async function sheetClear(tok,id,range){ return gfetch(tok,`${SAPI}/${id}/values/${encodeURIComponent(range)}:clear`,{method:'POST',body:'{}'}); }
+
+async function inFolder(tok){
+  const I=state.instinct;
+  if(I.folderId){ try{ const f=await gfetch(tok,`/drive/v3/files/${I.folderId}?fields=id,trashed`); if(!f.trashed) return I.folderId; }catch(e){ if(e.status!==404) throw e; } }
+  const L=await gfetch(tok,'/drive/v3/files?'+qs({q:`name='${IN_FOLDER}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,fields:'files(id)',spaces:'drive'}));
+  if(L.files&&L.files.length) return I.folderId=L.files[0].id;
+  const f=await gfetch(tok,'/drive/v3/files?fields=id',{method:'POST',body:JSON.stringify({name:IN_FOLDER,mimeType:'application/vnd.google-apps.folder',description:'קבצים ש־Instinct מוסיף בשביל האתר Status: פירוטי אשראי, תלושים, ייצוא Splitwise ומסמכים.'})});
+  return I.folderId=f.id;
+}
+async function inSheet(tok,folder){
+  const I=state.instinct;
+  if(I.sheetId){ try{ await gfetch(tok,`${SAPI}/${I.sheetId}?fields=spreadsheetId`); return I.sheetId; }catch(e){ if(e.status!==404&&e.status!==403) throw e; } }
+  const sh=await gfetch(tok,SAPI,{method:'POST',body:JSON.stringify({properties:{title:IN_SHEET,locale:'iw_IL',timeZone:'Asia/Jerusalem'},
+    sheets:[{properties:{title:T_TASKS,rightToLeft:true,gridProperties:{frozenRowCount:1}}},{properties:{title:T_FROM,rightToLeft:true,gridProperties:{frozenRowCount:1}}}]})});
+  I.sheetId=sh.spreadsheetId;
+  try{ await gfetch(tok,`/drive/v3/files/${I.sheetId}?addParents=${folder}&fields=id`,{method:'PATCH',body:'{}'}); }catch(e){}
+  await sheetPut(tok,I.sheetId,sheetRange(T_FROM,'A1:G1'),[['תאריך','סוג (מועד / הוצאה / הערה)','כותרת','סכום (₪)','תאריך יעד או חיוב','פרטים','נקלט באתר']]);
+  return I.sheetId;
+}
+
+/* what the site still needs this month */
+function inTasks(){
+  const prev=ymShift(ymNow(),-1), T=[];
+  if(!txOf(prev).some(t=>t.src==='import')) T.push({id:'card-'+prev,t:`פירוט חיובים של ${monthLong(prev)}`,d:'מאתר ישראכרט, כקובץ PDF או אקסל. לשים בתיקייה Status Inbox.'});
+  if(!state.docs.some(d=>d.type==='payslip'&&d.period===prev)) T.push({id:'slip-'+prev,t:`תלוש שכר של ${monthLong(prev)}`,d:'מהמייל או ממערכת השכר, כקובץ PDF. לשים בתיקייה.'});
+  const sw=Object.entries(state.splitwise||{});
+  if(sw.length) sw.forEach(([g,x])=>{ if(daysUntil(x.d)<-25) T.push({id:`sw-${g}-${ymNow()}`,t:`ייצוא Splitwise: ${g}`,d:'באתר Splitwise: הקבוצה ← Export as spreadsheet. לשים את ה־CSV בתיקייה.'}); });
+  else T.push({id:'sw-'+ymNow(),t:'ייצוא Splitwise',d:'אם יש קבוצות פעילות: באתר Splitwise, Export as spreadsheet לכל קבוצה, ולשים כל CSV בתיקייה.'});
+  REQS().filter(r=>r.k!=='payslip'&&r.k!=='card').forEach(r=>{ const s=reqStatus(r); if(s.st!=='ok') T.push({id:'req-'+r.k,t:`להשיג: ${r.t}`,d:`${r.src}. כ־PDF לתיקייה. אם צריך הזדהות, תשלום או פרטים מזהים, לשאול אותי קודם.`}); });
+  state.deadlines.filter(x=>{ const n=daysUntil(x.date); return n>=0&&n<=21; }).forEach(x=>T.push({id:'dl-'+x.id,t:`תזכורת: ${x.name}`,d:`עד ${shortDate(x.date)}. להזכיר לי בוואטסאפ שלושה ימים לפני.`}));
+  return T;
+}
+async function inWriteTasks(tok,id){
+  const old=await sheetGet(tok,id,sheetRange(T_TASKS,'A2:F200')).catch(()=>[]), st={};
+  old.forEach(r=>{ if(r[0]) st[r[0]]={s:r[3]||'',n:r[5]||''}; });
+  const T=inTasks(), now=new Date().toLocaleString('he-IL',{dateStyle:'short',timeStyle:'short'});
+  const done=Object.keys(st).filter(k=>!T.some(t=>t.id===k)&&!/הושלם/.test(st[k].s));
+  const rows=[['מזהה','משימה','פרטים','סטטוס (Instinct כותב: בוצע / תקוע / צריך אותי)','עודכן באתר','הערות של Instinct']]
+    .concat(T.map(t=>[t.id,t.t,t.d,st[t.id]&&st[t.id].s||'פתוח',now,st[t.id]&&st[t.id].n||'']))
+    .concat(done.map(k=>{ const o=old.find(r=>r[0]===k); return [k,o[1]||'',o[2]||'','הושלם ✓ (האתר קיבל)',now,st[k].n]; }));
+  await sheetClear(tok,id,sheetRange(T_TASKS,'A1:F300'));
+  await sheetPut(tok,id,sheetRange(T_TASKS,`A1:F${rows.length}`),rows);
+  state.instinct.tasks=T.map(t=>({...t,s:st[t.id]&&st[t.id].s||'פתוח',n:st[t.id]&&st[t.id].n||''}));
+}
+/* rows Instinct adds: date | type | title | amount | due/charge date | details | imported */
+const inDate=v=>{ const s=String(v||'').trim(); if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10); const d=parseDate(s); return d||null; };
+async function inReadFrom(tok,id){
+  const rows=await sheetGet(tok,id,sheetRange(T_FROM,'A2:G500')).catch(()=>[]); let n=0; const marks=[];
+  rows.forEach((r,i)=>{
+    if(!r[1]&&!r[2]||String(r[6]||'').trim()) return;
+    const type=String(r[1]||'').trim(), title=String(r[2]||'').trim().slice(0,80), amt=num(r[3]), due=inDate(r[4]), d=inDate(r[0])||today(), det=String(r[5]||'').trim().slice(0,200);
+    if(!title||looksSensitive(title)||looksSensitive(det)){ marks.push([i,'לא נקלט: חסרה כותרת או שיש מספר מזהה']); return; }
+    if(/מועד|תזכורת|deadline|due/i.test(type)&&(due||d)){ const date=due||d; if(!state.deadlines.some(x=>x.name===title&&x.date===date)) state.deadlines.push({id:uid(),name:title,type:'אחר',date}); marks.push([i,'נקלט כמועד ✓']); n++; }
+    else if(/הוצאה|תשלום|expense|payment/i.test(type)&&amt){ const dd=due||d; addTx({d:dd,m:title,a:R2(amt),c:catFor(title)||'אחר',tags:['instinct'],note:det,rev:true,src:'instinct'}); recomputeSpend(dd.slice(0,7)); marks.push([i,'נקלט כהוצאה ✓']); n++; }
+    else { state.instinct.notes.unshift({d,title,det}); state.instinct.notes=state.instinct.notes.slice(0,30); marks.push([i,'נקלט כהערה ✓']); n++; }
+  });
+  for(const [i,m] of marks) await sheetPut(tok,id,sheetRange(T_FROM,`G${i+2}`),[[m]]);
+  return n;
+}
+/* files Instinct dropped in the folder */
+const IN_TYPES={'application/pdf':'pdf','text/csv':'csv','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'xlsx','application/vnd.ms-excel':'xls'};
+async function inFiles(tok,folder){
+  const I=state.instinct, L=await gfetch(tok,'/drive/v3/files?'+qs({q:`'${folder}' in parents and trashed=false`,fields:'files(id,name,mimeType,modifiedTime,webViewLink)',orderBy:'createdTime',pageSize:100}));
+  const files=[], skipped=[];
+  for(const f of L.files||[]){
+    if(f.id===I.sheetId||f.mimeType==='application/vnd.google-apps.folder') continue;
+    if(I.files[f.id]===f.modifiedTime) continue;
+    let blob=null, name=f.name, type=f.mimeType;
+    if(IN_TYPES[f.mimeType]) blob=await gfetch(tok,`/drive/v3/files/${f.id}?alt=media`,{blob:true});
+    else if(f.mimeType==='application/vnd.google-apps.spreadsheet'){ blob=await gfetch(tok,`/drive/v3/files/${f.id}/export?mimeType=text/csv`,{blob:true}); name=f.name.replace(/\.csv$/i,'')+'.csv'; type='text/csv'; }
+    else { skipped.push({name:f.name,link:f.webViewLink}); I.files[f.id]=f.modifiedTime; continue; }
+    files.push({file:new File([blob],name,{type}),id:f.id,mt:f.modifiedTime});
+  }
+  return {files,skipped};
+}
+async function instinctSync(interactive){
+  if(inUI.busy) return; if(!(window.FB&&FB.user&&FB.googleToken)){ inUI.err='הסנכרון עובד רק באתר עצמו, אחרי כניסה עם Google.'; render(); return; }
+  inUI.busy=true; inUI.err=''; inUI.msg='מתחבר ל־Google Drive'; render();
+  try{
+    const tok=await FB.googleToken(interactive);
+    if(!tok){ inUI.busy=false; inUI.msg=''; render(); return; }
+    inUI.msg='בודק את התיקייה והגיליון'; render();
+    const folder=await inFolder(tok), sid=await inSheet(tok,folder);
+    const fromN=await inReadFrom(tok,sid);
+    inUI.msg='מוריד קבצים חדשים'; render();
+    const {files,skipped}=await inFiles(tok,folder);
+    let auto=false;
+    if(files.length){
+      await importFiles(files.map(x=>x.file));
+      const r=impUI.res;
+      if(r&&!impUI.error){ const partial=(r.slips||[]).some(s=>s.partial), swOk=(r.sw||[]).every(g=>g.members.includes(state.prefs.swName));
+        if(!partial&&swOk&&(r.months.length||(r.slips||[]).length||(r.sw||[]).length)){ impUI.mode='replace'; saveImport(); auto=true; } }
+      files.forEach(x=>state.instinct.files[x.id]=x.mt);
+    }
+    await inWriteTasks(tok,sid);
+    state.instinct.lastSync=Date.now(); state.instinct.on=true;
+    state.instinct.log.unshift({d:Date.now(),files:files.length,from:fromN,auto,skipped:skipped.map(s=>s.name)}); state.instinct.log=state.instinct.log.slice(0,12);
+    inUI.skipped=skipped; save();
+    inUI.msg=''; toast(files.length||fromN?`סונכרן: ${files.length} קבצים, ${fromN} עדכונים מ־Instinct`:'סונכרן. אין חדש מ־Instinct');
+    if(files.length&&!auto){ inUI.busy=false; go('docs'); toast('יש קבצים שצריך לאשר. בדוק את כרטיס הייבוא'); return; }
+  }catch(e){
+    const m=String(e&&e.message||e);
+    inUI.err=/has not been used|is disabled|accessNotConfigured|SERVICE_DISABLED/i.test(m)?'שירות Google Drive או Sheets לא מופעל בפרויקט. צריך להפעיל אותו פעם אחת ב־Google Cloud.'
+      :e&&e.status===401?'ההרשאה ל־Google Drive פגה. לחץ שוב על סנכרון.'
+      :/popup|cancel/i.test(m)?'חלון ההרשאה נסגר. לחץ שוב על סנכרון ואשר גישה ל־Drive.':'הסנכרון נכשל: '+m.slice(0,140);
+    if(e&&e.status===401) FB.dropToken&&FB.dropToken();
+  }
+  inUI.busy=false; inUI.msg=''; render();
+}
+function inAuto(){ const I=state.instinct; if(!I.on||!window.FB||!FB.user||!FB.cachedToken||!FB.cachedToken()) return; if(Date.now()-(I.lastSync||0)<3*3600e3) return; instinctSync(false); }
+window.addEventListener('fb-auth',()=>setTimeout(inAuto,6000));
+
+function instinctBrief(){
+  const I=state.instinct, folder=I.folderId?`https://drive.google.com/drive/folders/${I.folderId}`:'(התיקייה תיווצר בסנכרון הראשון)', sheet=I.sheetId?`https://docs.google.com/spreadsheets/d/${I.sheetId}`:'(הגיליון ייווצר בסנכרון הראשון)';
+  return `היי Instinct, מעכשיו אתה עוזר לי לנהל את הכסף והמסמכים דרך האתר שלי, Status. ככה זה עובד:
+
+1. בגוגל דרייב שלי יש תיקייה בשם "Status Inbox":
+${folder}
+כל קובץ שאתה שם בה, האתר קורא לבד: פירוט אשראי (PDF או אקסל), תלוש שכר (PDF), ייצוא Splitwise (CSV) ומסמכים.
+
+2. בתוך התיקייה יש גיליון "${IN_SHEET}":
+${sheet}
+בלשונית "${T_TASKS}" האתר כותב מה חסר לו החודש. כשאתה מסיים משימה, תכתוב "בוצע" בעמודת הסטטוס. אם נתקעת, תכתוב "תקוע" ותסביר בעמודת ההערות.
+
+3. כל חודש, ב־12 לחודש:
+• להוריד את פירוט החיובים של החודש הקודם מישראכרט ולשים בתיקייה.
+• למצוא במייל את תלוש השכר של החודש הקודם ולשים בתיקייה כ־PDF.
+• לייצא CSV מכל קבוצה פעילה ב־Splitwise (Export as spreadsheet) ולשים בתיקייה.
+• לעבור על הלשונית "${T_TASKS}" ולטפל בכל מה שפתוח. שם מופיעים גם מסמכים חסרים, כמו ארנונה, פוליסות ודוחות פנסיה.
+
+4. אם אתה מוצא מועד חשוב (חידוש ביטוח, תשלום, טסט) או הוצאה שלא עברה באשראי (מזומן, ביט), תוסיף שורה בלשונית "${T_FROM}": תאריך, סוג (מועד / הוצאה / הערה), כותרת, סכום, תאריך יעד, פרטים. את העמודה האחרונה תשאיר ריקה, האתר ממלא אותה.
+
+5. כללים:
+• רק להוסיף קבצים. לא למחוק ולא לשנות קבצים שכבר בתיקייה.
+• לתת לקבצים שמות ברורים, למשל isracard_2026-11.pdf או payslip_2026-11.pdf.
+• לא לכתוב בגיליון מספרי כרטיס, חשבון או תעודת זהות.
+• לפני כל דבר שדורש הזדהות, תשלום, חתימה או שליחת מידע עליי לגורם חיצוני, לשאול אותי קודם.`;
+}
+function copyBrief(){ const t=instinctBrief(); (navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(()=>toast('ההודעה הועתקה. הדבק אותה בוואטסאפ של Instinct'),()=>{ sheet(`<h2>ההודעה ל־Instinct</h2><textarea style="width:100%;min-height:320px" readonly>${esc(t)}</textarea><div class="actions"><button class="btn primary" onclick="closeSheet()">סגור</button></div>`); }); }
+function instinctView(){
+  const I=state.instinct, last=I.lastSync?new Date(I.lastSync).toLocaleString('he-IL',{dateStyle:'short',timeStyle:'short'}):null, T=I.tasks||[];
+  const st=s=>/בוצע|הושלם/.test(s)?'ok':/תקוע|צריך/.test(s)?'bad':'soon';
+  return `<div class="page-head"><div><h1>Instinct</h1><p>העוזר בוואטסאפ מביא מסמכים, והאתר קולט אותם לבד</p></div></div>
+  <div class="grid two"><div class="col">
+    <section class="panel"><h3>סנכרון</h3>
+      <p class="note" style="margin-top:0">Instinct שם קבצים בתיקייה <b>Status Inbox</b> בגוגל דרייב שלך. בכל סנכרון האתר מוריד את הקבצים החדשים, מייבא אותם (פירוט אשראי, תלושים, Splitwise), קורא את מה ש־Instinct כתב בגיליון, וכותב לו את המשימות של החודש.</p>
+      ${inUI.err?`<p class="status err">${esc(inUI.err)}</p>`:''}
+      ${inUI.busy?`<p class="status"><span class="dots">${esc(inUI.msg||'מסנכרן')}</span></p>`:''}
+      <button class="btn primary" style="width:100%" ${inUI.busy?'disabled':''} onclick="instinctSync(true)">${I.on?'🔄 סנכרן עכשיו':'🔗 חבר את Google Drive'}</button>
+      <p class="note">${last?`סנכרון אחרון: ${last}. כשהאתר פתוח, הוא מסנכרן לבד כל כמה שעות.`:'בפעם הראשונה ייפתח חלון של Google שבו תאשר לאתר לקרוא קבצים מהדרייב וליצור את התיקייה והגיליון.'}</p>
+      ${I.folderId||I.sheetId?`<div class="btn-row">${I.folderId?`<a class="btn ghost" href="https://drive.google.com/drive/folders/${I.folderId}" target="_blank" rel="noopener">📁 התיקייה</a>`:''}${I.sheetId?`<a class="btn ghost" href="https://docs.google.com/spreadsheets/d/${I.sheetId}" target="_blank" rel="noopener">📋 הגיליון</a>`:''}</div>`:''}
+      ${inUI.skipped.length?`<p class="note">קבצים שהאתר לא יודע לקרוא לבד (תמונות, מסמכים): ${inUI.skipped.map(s=>s.link?`<a href="${esc(s.link)}" target="_blank" rel="noopener">${esc(s.name)}</a>`:esc(s.name)).join(', ')}. אפשר לפתוח ולסרוק אותם ב״מסמכים״.</p>`:''}
+    </section>
+    <section class="panel"><h3>ההודעה ל־Instinct</h3>
+      <p class="note" style="margin-top:0">שלח את זה פעם אחת ל־Instinct בוואטסאפ. ההודעה כוללת את הקישורים לתיקייה ולגיליון, אז כדאי לשלוח אחרי הסנכרון הראשון.</p>
+      <div class="btn-row"><button class="btn ghost" onclick="copyBrief()">📋 העתק</button><a class="btn ghost" href="https://wa.me/?text=${encodeURIComponent(instinctBrief())}" target="_blank" rel="noopener">💬 פתח בוואטסאפ</a></div>
+    </section>
+  </div><div class="col">
+    <section class="panel"><h3>המשימות של Instinct החודש</h3>
+      ${T.length?T.map(t=>`<div class="dl"><div class="t"><b>${esc(t.t)}</b><span>${esc(t.n||t.d)}</span></div><span class="chip ${st(t.s)}">${esc(t.s)}</span></div>`).join(''):`<p class="empty">${I.on?'אין משימות פתוחות. הכל מעודכן ✓':'הרשימה תופיע אחרי הסנכרון הראשון. כרגע האתר צריך:'}</p>${I.on?'':inTasks().map(t=>`<div class="dl"><div class="t"><b>${esc(t.t)}</b><span>${esc(t.d)}</span></div></div>`).join('')}`}
+    </section>
+    ${I.notes.length?`<section class="panel"><h3>הערות מ־Instinct</h3>${I.notes.slice(0,8).map(x=>`<div class="dl"><div class="t"><b>${esc(x.title)}</b><span>${shortDate(x.d)}${x.det?' · '+esc(x.det):''}</span></div></div>`).join('')}</section>`:''}
+    ${I.log.length?`<section class="panel"><h3>היסטוריית סנכרון</h3>${I.log.slice(0,6).map(l=>`<div class="dl"><div class="t"><b>${new Date(l.d).toLocaleString('he-IL',{dateStyle:'short',timeStyle:'short'})}</b><span>${l.files} קבצים${l.auto?' · יובאו אוטומטית':l.files?' · חיכו לאישור':''} · ${l.from} עדכונים מהגיליון</span></div></div>`).join('')}</section>`:''}
+  </div></div>`;
+}
+
 let view = {name:'home'};
-const VALID = ['home','goals','year','widgets','auto','invest','savings','docs','deadlines','tx','budget','more','future','tools','learn','wb',...Object.keys(CATS)];
+const VALID = ['home','goals','year','widgets','auto','invest','savings','docs','deadlines','tx','budget','more','future','tools','learn','wb','instinct',...Object.keys(CATS)];
 function go(name,cat){ view={name,cat}; render(); window.scrollTo(0,0); }
 function render(){
   applyPrefs();
@@ -2249,6 +2435,7 @@ function render(){
   else if(v==='tools') app.innerHTML=toolsView();
   else if(v==='learn') app.innerHTML=learnView();
   else if(v==='wb') app.innerHTML=wbView();
+  else if(v==='instinct') app.innerHTML=instinctView();
   const on=k=>v===k||(k==='home'&&(v==='widgets'||v==='cat'))||(k==='more'&&!['home','widgets','cat','tx','budget'].includes(v));
   const tb=([k,l])=>`<button class="tab ${on(k)?'on':''}" onclick="go('${k}')" aria-current="${on(k)?'page':'false'}">${ICONS[k]}<span>${l}</span></button>`;
   document.getElementById('tabs').innerHTML=`<div class="tabs-in">${tb(['home','בית'])}${tb(['tx','תנועות'])}<button class="tab-plus" aria-label="הוספה וסריקה" onclick="openQuick()">${ICONS.plus}</button>${tb(['budget','תקציב'])}${tb(['more','עוד'])}</div>`;
@@ -2911,7 +3098,7 @@ setTimeout(()=>{ if(!started&&!window.FB) showGate('לא הצלחתי לטעון
 </script>
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
-import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+import { getAuth, GoogleAuthProvider, signInWithPopup, reauthenticateWithPopup, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import { getFirestore, doc, getDoc, setDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 async function loadCfg(){
   const r = await fetch('firebase-config.js?v=' + Date.now(), { cache: 'no-store' });
@@ -2932,6 +3119,19 @@ window.FB = {
   user: null,
   login: async () => { try { await signInWithPopup(auth, new GoogleAuthProvider()); } catch (e) { window.dispatchEvent(new CustomEvent('fb-error', { detail: ERR(e.code) })); } },
   logout: async () => { try { localStorage.removeItem('life-control-v2'); localStorage.removeItem('lc-uid'); } catch (e) {} await signOut(auth); location.reload(); },
+  cachedToken: () => { try { const c = JSON.parse(sessionStorage.getItem('st-gtok') || 'null'); return c && c.exp > Date.now() + 60000 && c.u === auth.currentUser.uid ? c.t : null; } catch (e) { return null; } },
+  dropToken: () => { try { sessionStorage.removeItem('st-gtok'); } catch (e) {} },
+  googleToken: async (interactive) => {
+    const c = window.FB.cachedToken(); if (c) return c; if (!interactive) return null;
+    const p = new GoogleAuthProvider();
+    p.addScope('https://www.googleapis.com/auth/drive.readonly'); p.addScope('https://www.googleapis.com/auth/drive.file');
+    p.setCustomParameters({ login_hint: auth.currentUser.email || '' });
+    const res = await reauthenticateWithPopup(auth.currentUser, p);
+    const cr = GoogleAuthProvider.credentialFromResult(res);
+    if (!cr || !cr.accessToken) throw new Error('notoken');
+    try { sessionStorage.setItem('st-gtok', JSON.stringify({ t: cr.accessToken, u: auth.currentUser.uid, exp: Date.now() + 50 * 60000 })); } catch (e) {}
+    return cr.accessToken;
+  },
   ref: () => doc(db, 'users', auth.currentUser.uid, 'data', 'state'),
   save: (r, d) => setDoc(r, { json: JSON.stringify(d), updatedAt: d.updatedAt || Date.now(), deviceId: d.deviceId || '' }),
   load: async r => { const s = await getDoc(r); return s.exists() ? JSON.parse(s.data().json) : null; },
