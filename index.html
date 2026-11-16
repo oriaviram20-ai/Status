@@ -1015,11 +1015,29 @@ function parseStatementRows(rows){
 }
 async function pdfItems(f){
   const lib=await loadPDFJS(); const doc=await lib.getDocument({data:new Uint8Array(await f.arrayBuffer())}).promise; const items=[];
-  for(let p=1;p<=doc.numPages;p++){ (await (await doc.getPage(p)).getTextContent()).items.forEach(i=>items.push({str:i.str,transform:i.transform,p})); }
+  const seq=[];
+  for(let p=1;p<=doc.numPages;p++){ const pg=await doc.getPage(p); (await pg.getTextContent()).items.forEach(i=>items.push({str:i.str,transform:i.transform,p}));
+    try{ const ops=await pg.getOperatorList(), O=lib.OPS||{showText:44,showSpacedText:45}; for(let k=0;k<ops.fnArray.length;k++){ const fn=ops.fnArray[k]; if(fn===O.showText||fn===O.showSpacedText){ const a=ops.argsArray[k][0]; if(Array.isArray(a)) seq.push(a.map(x=>x&&x.unicode!==undefined?x.unicode:'').join('')); } } }catch(e){} }
+  items.seq=seq;
   return items;
+}
+function slipFromSeq(seq){
+  const S=(seq||[]).map(x=>String(x).replace(/\s+/g,' ').trim()).filter(Boolean); if(!S.length) return null;
+  const rv=x=>[...x].reverse().join(''), has=(x,l)=>x.includes(l)||rv(x).includes(l), NUM=/^-?[\d,]+\.\d{2}$/, n=x=>parseFloat(x.replace(/,/g,''));
+  const idx=l=>S.findIndex(x=>has(x,l));
+  const after=(l,k=2)=>{ const i=idx(l); if(i<0) return null; for(let j=i+1;j<=i+k&&j<S.length;j++) if(NUM.test(S[j])) return n(S[j]); return null; };
+  const before=l=>{ const i=idx(l); return i>0&&NUM.test(S[i-1])?n(S[i-1]):null; };
+  const mi=S.findIndex(x=>has(x,'תלוש שכר לחודש')); let period=null;
+  if(mi>=0){ for(const c of [S[mi],rv(S[mi])]){ const m=c.match(/(\d{1,2})\/(\d{4})/); if(m&&+m[1]>=1&&+m[1]<=12){ period=`${m[2]}-${m[1].padStart(2,'0')}`; break; } } }
+  const net=after('שכר נטו')??before('שכר נטו');
+  if(!period||net==null) return null;
+  const grossI=idx('סה"כ תשלומים'); let gross=null; if(grossI>=0){ const v=S.slice(grossI+1,grossI+3).filter(x=>NUM.test(x)).map(n); if(v.length) gross=Math.max(...v); }
+  const penI=S.findIndex(x=>has(x,'פנסי')&&!has(x,'השלמת')); const pension=penI>0&&NUM.test(S[penI-1])?n(S[penI-1]):null;
+  return {period,net,gross,tax:before('מס הכנסה'),bl:before('ב.לאומי'),health:before('מס בריאות'),mand:after('ניכויי חובה'),pension,partial:false};
 }
 async function pdfTx(f){ return parseStatementRows(pdfRows(await pdfItems(f))); }
 function parsePayslip(items){
+  const fromSeq=slipFromSeq(items.seq); if(fromSeq) return fromSeq;
   const rows=pdfRows(items).map(r=>r.join(' ').replace(/\s+/g,' '));
   const all=rows.join('\n');
   if(!/תלוש\s*(ה)?שכר|שכר\s*נטו|ניכויי\s*חובה/.test(all)) return null;
