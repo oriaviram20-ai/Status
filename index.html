@@ -2730,7 +2730,7 @@ function openDoc(id){
   const d=state.docs.find(x=>x.id===id); if(!d) return;
   sheet(`<h2>${DOC_TYPES[d.type]?.icon||'📄'} ${esc(d.title)}</h2>
     <div class="meta note" style="margin:-8px 0 12px">${[d.issuer,d.period,new Date(d.ts).toLocaleDateString('he-IL')].filter(Boolean).map(esc).join(' · ')}</div>
-    ${d.amounts&&d.amounts.length?`<div class="kv">${d.amounts.map(a=>`<div><span>${esc(a.label)}</span><b>${N(fmt(a.value))}</b></div>`).join('')}</div>`:''}
+    ${d.amounts&&d.amounts.length?(()=>{const sc=/^(shared-expense|balances-snapshot)$/.test(d.fields&&d.fields.category||'')||d.fields&&d.fields.splitwiseLent!=null;return `<div class="kv">${d.amounts.map(a=>`<div><span>${esc(a.label)}</span><b>${N(sc?a.value.toLocaleString('he-IL',{minimumFractionDigits:2,maximumFractionDigits:2})+' ₪':fmt(a.value))}</b></div>`).join('')}</div>`;})():''}
     ${d.insight?`<div class="insight">${esc(d.insight)}</div>`:''}
     <div class="actions"><button class="btn danger" onclick="delDoc('${d.id}')">מחק</button><button class="btn primary" onclick="closeSheet()">סגור</button></div>`);
 }
@@ -2941,4 +2941,5 @@ onAuthStateChanged(auth, async u => {
 </script>
 </body>
 </html>
+
 
