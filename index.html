@@ -2234,6 +2234,17 @@ function monthPanel(){
 const IN_FOLDER='Status Inbox', IN_SHEET='Status · משימות ל־Instinct', T_TASKS='משימות', T_FROM='מ־Instinct';
 const GAPI='https://www.googleapis.com', SAPI='https://sheets.googleapis.com/v4/spreadsheets';
 const inUI={busy:false,msg:'',err:'',skipped:[]};
+/* Google sends the Drive permission back in the address (#access_token=...). Read it once and clean the address. */
+const inBack=(function(){
+  const h=location.hash||''; if(!/[#&](access_token|error)=/.test(h)) return null;
+  const p=new URLSearchParams(h.slice(1)); let ok=false; try{ ok=!!p.get('state')&&p.get('state')===sessionStorage.getItem('st-oauth-state'); sessionStorage.removeItem('st-oauth-state'); }catch(e){}
+  try{ history.replaceState(null,'',location.pathname+location.search+'#instinct'); }catch(e){}
+  if(!ok) return {err:'הבקשה לא אומתה. נסה שוב.'};
+  if(p.get('error')){ try{ sessionStorage.removeItem('st-gtok-pending'); }catch(e){} return {err:p.get('error')==='access_denied'?'לא אושרה גישה ל־Drive.':'Google החזיר שגיאה: '+p.get('error')}; }
+  const sc=p.get('scope')||''; if(!/drive\.readonly/.test(sc)) { try{ sessionStorage.removeItem('st-gtok-pending'); }catch(e){} return {err:'צריך לסמן את הגישה לקבצים ב־Drive בחלון של Google. נסה שוב וסמן את כל התיבות.'}; }
+  try{ sessionStorage.setItem('st-gtok',JSON.stringify({t:p.get('access_token'),u:null,exp:Date.now()+Math.min(+p.get('expires_in')||3600,3600)*1000-120000})); }catch(e){}
+  return {ok:true};
+})();
 const qs=o=>Object.entries(o).map(([k,v])=>k+'='+encodeURIComponent(v)).join('&');
 async function gfetch(tok,url,opt={}){
   const h={Authorization:'Bearer '+tok}; if(typeof opt.body==='string') h['Content-Type']='application/json';
@@ -2322,7 +2333,7 @@ async function inFiles(tok,folder){
 }
 async function instinctSync(interactive){
   if(inUI.busy) return; if(!(window.FB&&FB.user&&FB.googleToken)){ inUI.err='הסנכרון עובד רק באתר עצמו, אחרי כניסה עם Google.'; render(); return; }
-  inUI.busy=true; inUI.err=''; inUI.msg='מתחבר ל־Google Drive'; render();
+  inUI.busy=true; inUI.err=''; inUI.msg=interactive&&!FB.cachedToken()?'עובר לאישור של Google':'מתחבר ל־Google Drive'; render();
   try{
     const tok=await FB.googleToken(interactive);
     if(!tok){ inUI.busy=false; inUI.msg=''; render(); return; }
@@ -2355,7 +2366,16 @@ async function instinctSync(interactive){
   inUI.busy=false; inUI.msg=''; render();
 }
 function inAuto(){ const I=state.instinct; if(!I.on||!window.FB||!FB.user||!FB.cachedToken||!FB.cachedToken()) return; if(Date.now()-(I.lastSync||0)<3*3600e3) return; instinctSync(false); }
-window.addEventListener('fb-auth',()=>setTimeout(inAuto,6000));
+function inResume(tries){
+  let p=false; try{ p=sessionStorage.getItem('st-gtok-pending')==='1'; }catch(e){}
+  if(!p) return;
+  if(!(window.FB&&FB.cachedToken&&FB.cachedToken()&&sync.mode==='cloud')){ if((tries||0)<25) setTimeout(()=>inResume((tries||0)+1),1000); return; }
+  try{ sessionStorage.removeItem('st-gtok-pending'); }catch(e){}
+  go('instinct'); instinctSync(false);
+}
+window.addEventListener('fb-auth',()=>setTimeout(()=>{ inResume(0); inAuto(); },3000));
+if(inBack&&inBack.err) inUI.err=inBack.err;
+
 
 function instinctBrief(){
   const I=state.instinct, folder=I.folderId?`https://drive.google.com/drive/folders/${I.folderId}`:'(התיקייה תיווצר בסנכרון הראשון)', sheet=I.sheetId?`https://docs.google.com/spreadsheets/d/${I.sheetId}`:'(הגיליון ייווצר בסנכרון הראשון)';
@@ -3098,7 +3118,7 @@ setTimeout(()=>{ if(!started&&!window.FB) showGate('לא הצלחתי לטעון
 </script>
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
-import { getAuth, GoogleAuthProvider, signInWithPopup, reauthenticateWithPopup, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import { getFirestore, doc, getDoc, setDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 async function loadCfg(){
   const r = await fetch('firebase-config.js?v=' + Date.now(), { cache: 'no-store' });
@@ -3119,18 +3139,16 @@ window.FB = {
   user: null,
   login: async () => { try { await signInWithPopup(auth, new GoogleAuthProvider()); } catch (e) { window.dispatchEvent(new CustomEvent('fb-error', { detail: ERR(e.code) })); } },
   logout: async () => { try { localStorage.removeItem('life-control-v2'); localStorage.removeItem('lc-uid'); } catch (e) {} await signOut(auth); location.reload(); },
-  cachedToken: () => { try { const c = JSON.parse(sessionStorage.getItem('st-gtok') || 'null'); return c && c.exp > Date.now() + 60000 && c.u === auth.currentUser.uid ? c.t : null; } catch (e) { return null; } },
+  cachedToken: () => { try { const c = JSON.parse(sessionStorage.getItem('st-gtok') || 'null'); return c && c.exp > Date.now() + 60000 && (!c.u || (auth.currentUser && c.u === auth.currentUser.uid)) ? c.t : null; } catch (e) { return null; } },
   dropToken: () => { try { sessionStorage.removeItem('st-gtok'); } catch (e) {} },
   googleToken: async (interactive) => {
     const c = window.FB.cachedToken(); if (c) return c; if (!interactive) return null;
-    const p = new GoogleAuthProvider();
-    p.addScope('https://www.googleapis.com/auth/drive.readonly'); p.addScope('https://www.googleapis.com/auth/drive.file');
-    p.setCustomParameters({ login_hint: auth.currentUser.email || '' });
-    const res = await reauthenticateWithPopup(auth.currentUser, p);
-    const cr = GoogleAuthProvider.credentialFromResult(res);
-    if (!cr || !cr.accessToken) throw new Error('notoken');
-    try { sessionStorage.setItem('st-gtok', JSON.stringify({ t: cr.accessToken, u: auth.currentUser.uid, exp: Date.now() + 50 * 60000 })); } catch (e) {}
-    return cr.accessToken;
+    const st = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    try { sessionStorage.setItem('st-oauth-state', st); sessionStorage.setItem('st-gtok-pending', '1'); } catch (e) {}
+    const q = new URLSearchParams({ client_id: '14984346956-g996nd4dabufl35nc300mm41c37e744t.apps.googleusercontent.com', redirect_uri: location.origin + location.pathname.replace(/index\.html$/, ''), response_type: 'token',
+      scope: 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file', include_granted_scopes: 'true', login_hint: (auth.currentUser && auth.currentUser.email) || '', state: st });
+    location.assign('https://accounts.google.com/o/oauth2/v2/auth?' + q.toString());
+    return null;
   },
   ref: () => doc(db, 'users', auth.currentUser.uid, 'data', 'state'),
   save: (r, d) => setDoc(r, { json: JSON.stringify(d), updatedAt: d.updatedAt || Date.now(), deviceId: d.deviceId || '' }),
