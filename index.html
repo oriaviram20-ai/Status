@@ -2605,7 +2605,7 @@ function docsView(){
       ${importCard()}
       <section class="panel">
         <h3>נסרקו לאחרונה</h3>
-        ${state.docs.length?state.docs.slice(0,20).map(d=>`<div class="dl" role="button" tabindex="0" onclick="openDoc('${d.id}')"><div class="t"><b>${DOC_TYPES[d.type]?.icon||'📄'} ${esc(d.title)}</b><span>${d.period?esc(d.period)+' · ':''}${esc(d.issuer||DOC_TYPES[d.type]?.label||'')}</span></div>${d.amounts&&d.amounts[0]?`<span class="chip mute">${N(fmt(d.amounts[0].value))}</span>`:''}</div>`).join('')
+        ${state.docs.length?state.docs.slice(0,20).map(d=>`<div class="dl" role="button" tabindex="0" onclick="openDoc('${d.id}')"><div class="t"><b>${DOC_TYPES[d.type]?.icon||'📄'} ${esc(d.title)}</b><span>${d.period?esc(d.period)+' · ':''}${esc(d.issuer||DOC_TYPES[d.type]?.label||'')}</span></div>${d.amounts&&d.amounts[0]?(()=>{const sc=/^(shared-expense|balances-snapshot)$/.test(d.fields&&d.fields.category||'');const v=sc?d.amounts[0].value.toLocaleString('he-IL',{minimumFractionDigits:2,maximumFractionDigits:2})+' ₪':fmt(d.amounts[0].value);return `<span class="chip mute">${sc?esc(d.amounts[0].label)+': ':''}${N(v)}</span>`;})():''}</div>`).join('')
           :`<p class="empty">כאן יופיעו המסמכים שסרקת. כל סריקה חדשה מושווית לקודמות מאותו סוג.</p>`}
       </section>
     </div>
@@ -2941,3 +2941,4 @@ onAuthStateChanged(auth, async u => {
 </script>
 </body>
 </html>
+
