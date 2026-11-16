@@ -1,0 +1,61 @@
+rules_version = '2';
+
+// Status app - Firestore client access rules (v4 draft, NOT yet deployed).
+//
+// Scope note: these rules bound CLIENT access only. Firebase Admin SDK /
+// service-account / IAM access bypasses them by design.
+//
+// Structure note: there is intentionally NO broad recursive allow anywhere.
+// Firestore allows are additive, so a `match /{document=**} { allow write:
+// if isOwner(uid) }` style rule would bypass the version enforcement below.
+// Anything not explicitly allowed is denied by default.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isOwner(uid) {
+      return request.auth != null
+        && request.auth.uid == uid
+        && request.auth.token.email == 'ori.aviram20@gmail.com'
+        && request.auth.token.email_verified == true;
+    }
+
+    // Whole-state document. Every client write must carry a strictly
+    // incrementing integer version `v`, so a stale whole-state save
+    // (old tab, old app version, legacy writer) is rejected at storage
+    // instead of silently overwriting newer data.
+    match /users/{uid}/data/state {
+      allow read: if isOwner(uid);
+
+      // First write ever: must start the version counter at 1.
+      allow create: if isOwner(uid)
+        && request.resource.data.keys().hasOnly(['json', 'updatedAt', 'deviceId', 'v'])
+        && request.resource.data.json is string
+        && request.resource.data.get('v', -1) == 1;
+
+      // Migration boundary: a pre-v4 document has no `v`; resource.data.get
+      // yields 0, so its first versioned write must set v == 1. After that
+      // every write must increment exactly by 1. A write whose shape lacks
+      // `v` (the legacy save shape) fails hasOnly and is denied.
+      allow update: if isOwner(uid)
+        && request.resource.data.keys().hasOnly(['json', 'updatedAt', 'deviceId', 'v'])
+        && request.resource.data.json is string
+        && request.resource.data.get('v', -1) == resource.data.get('v', 0) + 1;
+
+      allow delete: if false;
+    }
+
+    // Sync staging: parsed records awaiting review/import. Append-only for
+    // now; update/delete stay denied until the import flow is designed.
+    match /users/{uid}/staging/{docId} {
+      allow read, create: if isOwner(uid);
+      allow update, delete: if false;
+    }
+
+    // Explicit default deny for everything else (documents the intent;
+    // Firestore denies unmatched paths anyway).
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
