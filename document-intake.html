@@ -1,0 +1,69 @@
+<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Status - קליטת מסמכים פרטית</title><style>body{font-family:Arial,sans-serif;background:#f0f4f8;color:#172331;margin:0;padding:20px}main{max-width:720px;margin:0 auto;background:white;padding:24px;border-radius:16px}h2{margin-top:0}.note{color:#52677e;line-height:1.5}.actions{display:flex;gap:10px;margin:12px 0;flex-wrap:wrap}.btn{padding:12px 18px;border:0;border-radius:10px;font:inherit;cursor:pointer}.primary{background:#009e88;color:white}.ghost{background:#edf2f7}.panel{border:1px solid #d8e3ed;padding:16px;border-radius:12px}.err{color:#af2134}textarea{border:1px solid #b9cbdc;border-radius:8px;padding:10px;font:14px monospace}button:disabled{opacity:.5}a{color:#007564}</style></head><body><main><a href="./">חזרה ל-Status</a><div id="panel"><h2>טוען...</h2></div></main><script src="document-intake.js"></script><script type="module">
+import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+import {getAuth,onAuthStateChanged,GoogleAuthProvider,signInWithPopup,setPersistence,browserLocalPersistence} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+import {getFirestore,doc,getDoc,getDocs,collection,runTransaction} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+const configText=await(await fetch('firebase-config.js')).text();
+const cfg=Function('return ('+configText.match(/\{[^{}]*apiKey[^{}]*\}/)[0]+')')();
+const app=initializeApp(cfg),auth=getAuth(app),db=getFirestore(app);
+await setPersistence(auth,browserLocalPersistence);
+const DEVICE='document-intake';
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const sheet=s=>document.getElementById('panel').innerHTML=s;
+const closeSheet=()=>location.href='./';
+const FB=window.FB={ref:()=>doc(db,'users',auth.currentUser.uid,'data','state'),
+  listStaging: async () => { const s=await getDocs(collection(db,'users',auth.currentUser.uid,'staging'));return s.docs.map(d=>({id:d.id,...d.data()})); },
+  stageRecords: async records => {
+    let existing=await window.FB.listStaging(),created=0,skipped=0;
+    for(const raw of records){
+      const record=window.documentIntake.validate(raw);
+      if(window.documentIntake.duplicate(existing,record)){skipped++;continue;}
+      const target=doc(db,'users',auth.currentUser.uid,'staging','intake_'+record.sourceKey);
+      const added=await runTransaction(db,async txn=>{const s=await txn.get(target);if(s.exists())return false;txn.set(target,{payload:record,status:'pending-review',stagedAt:Date.now(),stagedBy:'private-intake'});return true;});
+      if(added){created++;existing.push({payload:record});}else skipped++;
+    }
+    return {created,skipped};
+  },
+  importStagedDocument: async (raw,deviceId) => {
+    const record=window.documentIntake.validate(raw),target=window.FB.ref();
+    return await runTransaction(db,async txn=>{
+      const staged=await txn.get(doc(db,'users',auth.currentUser.uid,'staging','intake_'+record.sourceKey));
+      if(!staged.exists()||JSON.stringify(window.documentIntake.validate(staged.data().payload))!==JSON.stringify(record))throw Error('Staging record changed or missing');
+      const snap=await txn.get(target);if(!snap.exists())throw Error('Cloud state missing');
+      const original=snap.data(),cloud=JSON.parse(original.json),now=Date.now();
+      const result=window.documentIntake.append(cloud,record,now);
+      if(result.duplicate)return {...result,state:{...cloud,v:original.v}};
+      const newV=(original.v||0)+1;result.state.updatedAt=now;result.state.deviceId=deviceId;result.state.baseV=newV;
+      txn.set(target,{json:JSON.stringify(result.state),updatedAt:now,deviceId,v:newV});
+      return {...result,state:{...result.state,v:newV}};
+    });
+  },
+};
+const intakeUI={records:[],error:'',notice:'',busy:false};
+function intakePanel(){
+ sheet(`<h2>קליטת מסמכים פרטית</h2><p class="note">המידע נשמר רק בחשבון שלך. קליטה אינה משנה תקציב או תנועות. ההוספה למסמכים נשארת ממתינה לבדיקה.</p><label for="intake-json">רשומות מסמכים (JSON)</label><textarea id="intake-json" dir="ltr" rows="4" style="width:100%;box-sizing:border-box" aria-label="רשומות מסמכים JSON"></textarea><div class="actions"><button class="btn primary" onclick="stageIntake()" ${intakeUI.busy?'disabled':''}>קלוט לאזור הפרטי</button><button class="btn ghost" onclick="loadIntake()" ${intakeUI.busy?'disabled':''}>רענן רשומות</button></div>${intakeUI.error?`<p role="alert" class="err">${esc(intakeUI.error)}</p>`:''}${intakeUI.notice?`<p role="status">${esc(intakeUI.notice)}</p>`:''}<div>${intakeUI.records.map((x,i)=>{const r=x.payload;return `<section class="panel" style="margin-top:12px"><h3>${esc(r?r.document.title:x.title||'רשומת מקור קודמת')}</h3><p>${esc(r?r.document.period||'':x.period||'')} · ממתין לבדיקה</p>${r?`<p class="note">${esc(r.provenance)}</p><button class="btn primary" onclick="importIntake(${i})" ${intakeUI.busy?'disabled':''}>הוסף למסמכים בלבד</button>`:'<p class="note">רשומת מקור קודמת, נשמרה ללא שינוי.</p>'}</section>`;}).join('')}</div><div class="actions"><button class="btn ghost" onclick="closeSheet()">סגור</button></div>`);
+}
+async function loadIntake(){
+ intakeUI.busy=true;intakeUI.error='';intakePanel();
+ try{intakeUI.records=await FB.listStaging();}catch(e){intakeUI.error='לא ניתן לקרוא את אזור הקליטה. '+e.message;}
+ finally{intakeUI.busy=false;intakePanel();}
+}
+async function stageIntake(){
+ if(intakeUI.busy)return;const value=document.getElementById('intake-json').value;
+ intakeUI.error='';intakeUI.notice='';
+ try{const raw=JSON.parse(value),batch=Array.isArray(raw)?raw:[raw];if(!batch.length||batch.length>30)throw Error('1-30 records required');const records=batch.map(documentIntake.validate);intakeUI.busy=true;intakePanel();const result=await FB.stageRecords(records);intakeUI.notice=`נשמרו ${result.created} רשומות; ${result.skipped} כבר קיימות. לא שונו תנועות או תקציב.`;intakeUI.records=await FB.listStaging();}
+ catch(e){intakeUI.error='הקליטה לא הושלמה: '+e.message;}
+ finally{intakeUI.busy=false;intakePanel();}
+}
+async function importIntake(i){
+ if(intakeUI.busy)return;intakeUI.error='';intakeUI.notice='';
+ if(false){intakeUI.error='יש שינוי מקומי שלא סונכרן. יש להשלים סנכרון לפני הייבוא.';intakePanel();return;}
+ const raw=intakeUI.records[i]&&intakeUI.records[i].payload;if(!raw)return;
+ intakeUI.busy=true;intakePanel();
+ try{const res=await FB.importStagedDocument(raw,DEVICE);intakeUI.notice=res.duplicate?'המסמך כבר קיים. לא נוצר עותק נוסף.':'המסמך נוסף להיסטוריית המסמכים וממתין לבדיקה. התנועות והתקציב לא שונו.';}
+ catch(e){intakeUI.error='המסמך לא נוסף: '+e.message;}
+ finally{intakeUI.busy=false;intakePanel();}
+}
+
+Object.assign(window,{intakePanel,loadIntake,stageIntake,importIntake,closeSheet});
+onAuthStateChanged(auth,u=>{if(u&&u.email==='ori.aviram20@gmail.com'){loadIntake();}else{sheet('<h2>כניסה לאזור הפרטי</h2><p>הקליטה זמינה לבעל החשבון בלבד.</p><button class="btn primary" id="login">כניסה עם Google</button>');document.getElementById('login').onclick=()=>signInWithPopup(auth,new GoogleAuthProvider());}});
+</script></body></html>
