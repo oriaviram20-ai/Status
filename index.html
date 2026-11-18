@@ -2577,13 +2577,28 @@ function delSaving(id){ state.savings=state.savings.filter(x=>x.id!==id); save()
 /* ---------- Documents ---------- */
 const docUI={type:'auto',file:null,url:null,busy:false,result:null,error:'',done:false};
 let docCtl=null;
+/* Instinct's private intake area (document-intake.html): show how many records wait for review. Read only. */
+const stagingUI={n:null,at:0};
+async function refreshStaging(){
+  if(!(window.FB&&FB.user&&FB.listStaging)||Date.now()-stagingUI.at<60000) return; stagingUI.at=Date.now();
+  try{ const L=await FB.listStaging(), have=new Set();
+    (state.docs||[]).forEach(d=>{ if(d.id) have.add(d.id); const f=d.fields||{}; [f.sourceKey,...(f.sourceKeys||[])].forEach(k=>{ if(k) have.add(k); }); });
+    const n=L.filter(x=>x.payload&&x.payload.document&&!have.has(x.payload.document.id)&&!(x.payload.dedupKeys||[]).some(k=>have.has(k))).length;
+    if(n!==stagingUI.n){ stagingUI.n=n; if(view.name==='docs'&&!document.querySelector('.backdrop')) render(); } }catch(e){}
+}
+function stagingCard(){
+  if(!(window.FB&&FB.user)) return '';
+  return `<section class="panel"><h3>📥 מסמכים מ־Instinct</h3><p class="note" style="margin-top:0">${stagingUI.n?`${stagingUI.n} מסמכים ש־Instinct אסף מחכים לבדיקה שלך.`:stagingUI.n===0?'אין מסמכים שמחכים לבדיקה ✓':'Instinct שומר מסמכים באזור קליטה פרטי. שם בודקים ומוסיפים אותם למסמכים.'}</p><a class="btn ${stagingUI.n?'primary':'ghost'}" style="text-decoration:none;display:inline-flex" href="document-intake.html">לאזור הקליטה ←</a></section>`;
+}
 function docsView(){
+  refreshStaging();
   const avail=!!(sampleFn&&sampleImgs);
   const r=docUI.result;
   return `
   <div class="page-head"><div><h1>מסמכים</h1><p>מצלמים, והאתר קורא, משווה ומעדכן</p></div></div>
   <div class="grid two">
     <div class="col">
+      ${stagingCard()}
       <section class="panel">
         <h3>סריקת מסמך</h3>
         <div class="types" role="group" aria-label="סוג המסמך">${Object.entries(DOC_TYPES).map(([k,v])=>`<button class="type" aria-pressed="${docUI.type===k}" onclick="docUI.type='${k}';render()">${v.icon} ${v.label}</button>`).join('')}</div>
@@ -2886,7 +2901,7 @@ setTimeout(()=>{ if(!started&&!window.FB) showGate('לא הצלחתי לטעון
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-import { getFirestore, doc, getDoc, setDoc, onSnapshot, runTransaction } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+import { getFirestore, doc, getDoc, setDoc, onSnapshot, runTransaction, collection, getDocs } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 async function loadCfg(){
   const r = await fetch('firebase-config.js?v=' + Date.now(), { cache: 'no-store' });
   if (!r.ok) throw new Error('nocfg');
@@ -2907,6 +2922,7 @@ window.FB = {
   login: async () => { try { await signInWithPopup(auth, new GoogleAuthProvider()); } catch (e) { window.dispatchEvent(new CustomEvent('fb-error', { detail: ERR(e.code) })); } },
   logout: async () => { try { localStorage.removeItem('life-control-v2'); localStorage.removeItem('lc-uid'); } catch (e) {} await signOut(auth); location.reload(); },
   ref: () => doc(db, 'users', auth.currentUser.uid, 'data', 'state'),
+  listStaging: async () => { const q = await getDocs(collection(db, 'users', auth.currentUser.uid, 'staging')); return q.docs.map(d => ({ id: d.id, ...d.data() })); },
   save: async (r, d) => {
     if (!window.mergeLib) { const err = new Error('mergeLib not loaded'); err.code = 'mergelib-missing'; throw err; }
     let snapshot = null; try { snapshot = JSON.parse(localStorage.getItem('lc-base')); } catch (e) {}
