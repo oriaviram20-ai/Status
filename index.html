@@ -3030,15 +3030,29 @@ function commitDoc(apply){
   docUI.done=true; save(); render(); toast(apply?'עודכן ונשמר':'נשמר בהיסטוריה');
 }
 /* A bill document (often from Instinct) can become a fixed payment. Uses your personal share when the bill is split. */
+const DOC_CAT_HE={'מים':'מים','אינטרנט':'אינטרנט','חשמל':'חשמל','ארנונה':'ארנונה','גז':'גז','סלולר':'סלולר','טלפון':'סלולר'};
+/* Which fixed-payment list a document belongs to. Instinct writes categories in Hebrew, the scanner in English. */
+function docItemTarget(d){
+  const f=d.fields||{}, c=String(f.category||'').trim();
+  if(BILL_CAT[c]) return {cat:'bills',name:BILL_CAT[c]};
+  if(DOC_CAT_HE[c]) return {cat:'bills',name:DOC_CAT_HE[c]};
+  const clean=String(d.title||'').replace(/\s*\([^)]*\)\s*/g,' ').replace(/^מנוי\s+/,'').replace(/\s+/g,' ').trim().slice(0,40);
+  if(!clean) return null;
+  if(/מנוי/.test(c)) return {cat:'subs',name:clean};
+  if(d.type==='insurance'||/ביטוח/.test(c)) return {cat:'insurance',name:clean};
+  if(d.type==='bill'&&c&&!/shared-expense|balances/.test(c)) return {cat:'bills',name:clean};
+  return null;
+}
 function docBudgetPlan(d,monthsOverride){
-  const f=d.fields||{}; if(d.type!=='bill'||!BILL_CAT[f.category]) return null;
-  const total=num(f.amount); if(!total||total<=0) return null;
-  const share=num(f.personalShare), amt=share!=null&&share>0?share:total;
+  const f=d.fields||{}, T=docItemTarget(d); if(!T) return null;
+  const total=num(f.amount), share=num(f.personalShare);
+  if(!(total>0)&&!(share>0)) return null;
+  const amt=share!=null&&share>0?share:total;
   let months=null; if(f.periodStart&&f.periodEnd){ const m=Math.round((new Date(f.periodEnd)-new Date(f.periodStart))/(864e5*30.44)); if(m>=1&&m<=12) months=m; }
   if(!months) months=Math.max(1,Math.min(12,Math.round(num(f.periodMonths)||1)));
   if(monthsOverride) months=+monthsOverride;
   const fr=[1,2,3,12].includes(months)?months:1, val=fr===months?amt:amt/months;
-  return {name:BILL_CAT[f.category],amount:Math.round(val*100)/100,freq:fr,share:share!=null&&share>0,months,amt};
+  return {cat:T.cat,name:T.name,amount:Math.round(val*100)/100,freq:fr,share:share!=null&&share>0,months,amt};
 }
 const docMUI={};
 function docBudgetHTML(d){
@@ -3050,7 +3064,7 @@ function docBudgetHTML(d){
 }
 function applyDocBudget(id){
   const d=state.docs.find(x=>x.id===id); if(!d) return; const P=docBudgetPlan(d,docMUI[id]); if(!P) return;
-  upsertItem('bills',P.name,P.amount,P.freq); d.appliedAt=Date.now(); delete docMUI[id]; save(); openDoc(id); render(); toast(`״${P.name}״ נוסף לתשלומים הקבועים`);
+  upsertItem(P.cat,P.name,P.amount,P.freq); d.appliedAt=Date.now(); delete docMUI[id]; save(); openDoc(id); render(); toast(`״${P.name}״ נוסף לתשלומים הקבועים`);
 }
 function openDoc(id){
   const d=state.docs.find(x=>x.id===id); if(!d) return;
