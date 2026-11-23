@@ -2502,7 +2502,7 @@ function workdaysLeft(ym){
   return n;
 }
 function cibusStat(ym){
-  const L=cibusEntries(ym), spent=L.reduce((a,e)=>a+e.a,0), budget=state.cibus.budget||0, left=budget-spent, wl=workdaysLeft(ym);
+  const L=cibusEntries(ym), spent=L.reduce((a,e)=>a+e.a,0), budget=state.cibus.budget||0, left=budget-spent, td=today(), wl=Math.max(0,workdaysLeft(ym)-(ym===ymNow()&&new Date().getDay()<=4&&L.some(e=>e.d===td)?1:0));
   return {L,spent,budget,left,wl,perDay:wl?left/wl:null};
 }
 function cibusCard(){
