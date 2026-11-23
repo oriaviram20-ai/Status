@@ -897,7 +897,7 @@ function freshList(){
   // fx
   add('fx','שוק','שער הדולר',state.fx.usd?String(state.fx.usd):'—',state.fx.d,fLvl(fAge(state.fx.d),mktGreen(),5),state.fx.src==='google'?'Google Finance':state.fx.src==='market'?'הבנק המרכזי האירופי':'ידני','משתנה כל יום. מתעדכן אוטומטית בכניסה לאתר.',"go('invest')");
   // splitwise
-  const sw=Object.values(swBalances()).map(x=>x.d).sort().pop(); if(sw) add('sw','שותפים','יתרות Splitwise',Object.entries(swBalances()).map(([g,x])=>`${g}: ${x.bal>=0?'חייבים לך':'אתה חייב'} ${fmt(Math.abs(x.bal))}`).join(' · '),sw,fLvl(fAge(sw),2,5),Object.values(state.splitwise||{}).some(x=>x.src==='api')?'חיבור ישיר ל־Splitwise (כל שעה)':'Instinct / ייצוא Splitwise',Object.values(state.splitwise||{}).some(x=>x.src==='api')?'מתעדכן לבד כל שעה דרך הסקריפט בחשבון Google שלך.':'משתנה כמעט כל יום. לחיצה כאן: הוראות לחיבור אוטומטי.',Object.values(state.splitwise||{}).some(x=>x.src==='api')?"go('tx')":"swSetup()");
+  const sw=Object.values(swBalances()).map(x=>x.d).sort().pop(); if(sw) add('sw','שותפים','יתרות Splitwise',Object.entries(swBalances()).map(([g,x])=>`${g}: ${x.bal>=0?'חייבים לך':'אתה חייב'} ${fmt(Math.abs(x.bal))}`).join(' · '),sw,fLvl(fAge(sw),2,5),Object.values(state.splitwise||{}).some(x=>x.src==='api')?'חיבור ישיר ל־Splitwise (כל שעה)':'Instinct / ייצוא Splitwise',Object.values(state.splitwise||{}).some(x=>x.src==='api')?'מתעדכן לבד כל שעה דרך הסקריפט בחשבון Google שלך.':'משתנה כמעט כל יום. מתעדכן דרך Instinct (משימה יומית ומיילים של Splitwise). חיבור ישיר אפשרי רק עם Splitwise Pro.',"go('tx')");
   // email via Instinct
   add('mail','מקורות','סריקת המייל (Instinct)',stagingUI.n?`${stagingUI.n} מחכים לאישור`:'אין חדש',stagingUI.last?isoOf(stagingUI.last):null,fLvl(fAge(stagingUI.last?isoOf(stagingUI.last):null),1,3),'המייל הראשי והמשני, דרך Instinct','Instinct קורא את המיילים ושולח לכאן מסמכים. התאריך הוא הפעם האחרונה שהגיע ממנו משהו.',"location.href='document-intake.html'");
   add('drive','מקורות','תיקיית Drive ומשימות ל־Instinct',state.instinct.on?'מחובר':'לא מחובר',isoOf(state.instinct.lastSync),state.instinct.on?fLvl(fAge(isoOf(state.instinct.lastSync)),1,3):'miss','Google Drive','מסונכרן אוטומטית בכניסה לאתר.',"go('instinct')");
@@ -1480,7 +1480,7 @@ function swBalances(){
 function swHomeCard(){ const E=Object.entries(swBalances()).filter(([,x])=>Math.abs(x.bal)>=1); if(!E.length) return '';
   const api=Object.values(state.splitwise||{}).some(x=>x.src==='api');
   return `<section class="panel"><h3>🤝 Splitwise ${fTag('sw')}<button onclick="txUI.ym=ymNow();go('tx')">פירוט ←</button></h3>${E.map(([g,x])=>`<div class="dl"><div class="t"><b>${esc(g)}</b><span>נכון ל־${shortDate(x.d)}${(x.debts||[]).length?' · '+x.debts.map(y=>esc(y.dir==='owes_me'?`${y.who} חייב/ת לך ${fmt(y.a)}`:`אתה חייב ל${y.who} ${fmt(y.a)}`)).join(' · '):''}</span></div><b class="${x.bal<0?'down':'up'}">${N((x.bal>0?'חייבים לך ':'אתה חייב ')+fmt(Math.abs(x.bal)))}</b></div>`).join('')}
-    ${api?'':`<button class="link" style="margin-top:6px" onclick="swSetup()">חיבור אוטומטי ל־Splitwise, מתעדכן כל שעה ←</button>`}</section>`; }
+    </section>`; }
 function swBalHTML(){ const E=Object.entries(swBalances()); if(!E.length) return '';
   return `<section class="panel" style="padding-block:14px"><h3 style="margin-bottom:4px">🤝 Splitwise <button onclick="quickScan('import')">עדכון ←</button></h3>${E.map(([g,x])=>`<div class="dl"><div class="t"><b>${esc(g)}</b><span>${esc(x.me)} · נכון ל־${shortDate(x.d)}</span></div><b class="${x.bal<0?'down':'up'}">${Math.abs(x.bal)<1?'מאוזן ✓':N((x.bal>0?'חייבים לך ':'אתה חייב ')+fmt(Math.abs(x.bal)))}</b></div>`).join('')}</section>`; }
 
@@ -2549,6 +2549,7 @@ function applySplitwiseApi(rows){
 function swSetup(){
   const code=SW_GAS.replace('__SHEET_ID__',state.instinct.sheetId||'');
   sheet(`<h2>🤝 חיבור Splitwise אוטומטי</h2>
+    <p class="note"><b>דורש Splitwise Pro:</b> Splitwise נותן גישת API רק למנויי Pro.</p>
     <p class="note">סקריפט קטן בחשבון Google שלך יעדכן כל שעה את היתרות וההוצאות מ־Splitwise, והאתר יקרא אותן בכל כניסה. המפתח של Splitwise נשמר רק בסקריפט, לא באתר ולא בקוד.</p>
     <ol class="steps-ol">
       <li><b>מפתח מ־Splitwise:</b> נכנסים ל־<a href="https://secure.splitwise.com/apps" target="_blank" rel="noopener">secure.splitwise.com/apps</a>, לוחצים Register your application, ממלאים שם (Status), תיאור (סנכרון לאתר האישי) וכתובת (https://oriaviram20-ai.github.io/Status/), מאשרים את התנאים ולוחצים Register and get API key. מעתיקים את ה־API key.</li>
