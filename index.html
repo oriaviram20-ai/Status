@@ -896,7 +896,7 @@ function freshList(){
   // fx
   add('fx','שוק','שער הדולר',state.fx.usd?String(state.fx.usd):'—',state.fx.d,fLvl(fAge(state.fx.d),mktGreen(),5),state.fx.src==='google'?'Google Finance':state.fx.src==='market'?'הבנק המרכזי האירופי':'ידני','משתנה כל יום. מתעדכן אוטומטית בכניסה לאתר.',"go('invest')");
   // splitwise
-  const sw=Object.values(swBalances()).map(x=>x.d).sort().pop(); if(sw) add('sw','שותפים','יתרות Splitwise',Object.entries(swBalances()).map(([g,x])=>`${g}: ${x.bal>=0?'חייבים לך':'אתה חייב'} ${fmt(Math.abs(x.bal))}`).join(' · '),sw,fLvl(fAge(sw),3,10),'Instinct / ייצוא Splitwise','משתנה בכל הוצאה משותפת.',"go('tx')");
+  const sw=Object.values(swBalances()).map(x=>x.d).sort().pop(); if(sw) add('sw','שותפים','יתרות Splitwise',Object.entries(swBalances()).map(([g,x])=>`${g}: ${x.bal>=0?'חייבים לך':'אתה חייב'} ${fmt(Math.abs(x.bal))}`).join(' · '),sw,fLvl(fAge(sw),2,5),'Instinct / ייצוא Splitwise','משתנה כמעט כל יום. Instinct מקבל משימה יומית לעדכן כשהיתרות בנות יומיים ומעלה.',"go('tx')");
   // email via Instinct
   add('mail','מקורות','סריקת המייל (Instinct)',stagingUI.n?`${stagingUI.n} מחכים לאישור`:'אין חדש',stagingUI.last?isoOf(stagingUI.last):null,fLvl(fAge(stagingUI.last?isoOf(stagingUI.last):null),1,3),'המייל הראשי והמשני, דרך Instinct','Instinct קורא את המיילים ושולח לכאן מסמכים. התאריך הוא הפעם האחרונה שהגיע ממנו משהו.',"location.href='document-intake.html'");
   add('drive','מקורות','תיקיית Drive ומשימות ל־Instinct',state.instinct.on?'מחובר':'לא מחובר',isoOf(state.instinct.lastSync),state.instinct.on?fLvl(fAge(isoOf(state.instinct.lastSync)),1,3):'miss','Google Drive','מסונכרן אוטומטית בכניסה לאתר.',"go('instinct')");
@@ -1365,7 +1365,7 @@ async function importFiles(files){
           const items=await pdfItems(f), sl=parsePayslip(items);
           if(sl){ slips.push(sl); continue; }
           const t=parseStatementRows(pdfRows(items)); if(t.length) tx=tx.concat(t); else bad.push(f.name);
-        } else { const cb=await cibusFile(f); if(cb){ cibus.push(cb); continue; } const sw=await swFile(f); if(sw){ sw.k=Math.max(0,sw.members.indexOf(state.prefs.swName)); sws.push(sw); continue; } const t=await sheetTx(f); if(t.length) tx=tx.concat(t); else bad.push(f.name); }
+        } else { const cb=await cibusFile(f); if(cb){ cibus.push(cb); continue; } const sw=await swFile(f); if(sw){ sw.k=Math.max(0,sw.members.indexOf(swMe(sw.members))); sws.push(sw); continue; } const t=await sheetTx(f); if(t.length) tx=tx.concat(t); else bad.push(f.name); }
       }catch(e){ if(e&&e.message==='load') throw e; bad.push(f.name); }
     }
     slips.sort((a,b)=>(a.period||'').localeCompare(b.period||''));
@@ -1435,6 +1435,13 @@ function swPlan(g,k,cardHasMine){
   });
   return {tx,share,back,pays,foreign,skip,bal:(g.balance[k]||0)};
 }
+/* Which Splitwise member is you: the saved choice, or the member that matches your Google name */
+function swMe(members){
+  if(state.prefs.swName&&members.includes(state.prefs.swName)) return state.prefs.swName;
+  const n=String((window.FB&&FB.user&&FB.user.displayName)||'').toLowerCase().split(/\s+/).filter(Boolean); if(!n.length) return null;
+  const m=members.find(x=>n.every(w=>x.toLowerCase().includes(w)))||members.find(x=>x.toLowerCase().split(/\s+/)[0]===n[0]);
+  if(m) state.prefs.swName=m; return m||null;
+}
 function swSel(i,k){ const r=impUI.res; r.sw[i].k=+k; state.prefs.swName=r.sw[i].members[+k]; render(); }
 function swHTML(r){
   if(!(r.sw||[]).length) return '';
@@ -1463,6 +1470,10 @@ function swBalances(){
     const A=d.amounts||[], rec=A.find(a=>/לקבלת|owed to you|you are owed/i.test(a.label)), pay=A.find(a=>/לתשלום|you owe/i.test(a.label));
     const bal=rec?num(rec.value):pay?-num(pay.value):null; if(bal==null) return;
     if(!B[g]||String(B[g].d||'')<at) B[g]={bal,d:at,me:'לפי Instinct'}; });
+  (stagingUI.swSnaps||[]).forEach(d=>{ const f=d.fields||{}; const g=f.splitwiseGroup||Object.keys(B)[0]||'Splitwise'; const at=String(f.observedAt||'').slice(0,10)||isoOf(d.stagedAt);
+    const A=d.amounts||[], rec=A.find(a=>/לקבלת|owed to you|you are owed|receivable/i.test(a.label)), pay=A.find(a=>/לתשלום|you owe|payable/i.test(a.label));
+    const bal=rec?num(rec.value):pay?-num(pay.value):null; if(bal==null) return;
+    if(!B[g]||String(B[g].d||'')<at) B[g]={bal,d:at,me:'לפי Instinct (ממתין לאישור, לתצוגה בלבד)'}; });
   return B;
 }
 function swHomeCard(){ const E=Object.entries(swBalances()).filter(([,x])=>Math.abs(x.bal)>=1); if(!E.length) return '';
@@ -2467,9 +2478,8 @@ function inTasks(){
   const prev=ymShift(ymNow(),-1), T=[];
   if(!txOf(prev).some(t=>t.src==='import')) T.push({id:'card-'+prev,t:`פירוט חיובים של ${monthLong(prev)}`,d:'מאתר ישראכרט, כקובץ PDF או אקסל. לשים בתיקייה Status Inbox.'});
   if(!state.docs.some(d=>d.type==='payslip'&&d.period===prev)) T.push({id:'slip-'+prev,t:`תלוש שכר של ${monthLong(prev)}`,d:'מהמייל או ממערכת השכר, כקובץ PDF. לשים בתיקייה.'});
-  const sw=Object.entries(state.splitwise||{});
-  if(sw.length) sw.forEach(([g,x])=>{ if(daysUntil(x.d)<-25) T.push({id:`sw-${g}-${ymNow()}`,t:`ייצוא Splitwise: ${g}`,d:'באתר Splitwise: הקבוצה ← Export as spreadsheet. לשים את ה־CSV בתיקייה.'}); });
-  else T.push({id:'sw-'+ymNow(),t:'ייצוא Splitwise',d:'אם יש קבוצות פעילות: באתר Splitwise, Export as spreadsheet לכל קבוצה, ולשים כל CSV בתיקייה.'});
+  const swB=swBalances(), swLast=Object.values(swB).map(x=>x.d).sort().pop();
+  if(!swLast||fAge(swLast)>=2) T.push({id:'sw-'+today(),t:'Splitwise: עדכון יומי',d:`היתרות באתר מ־${swLast?shortDate(swLast):'אף פעם'}. כל יום: ייצוא CSV של כל קבוצה פעילה (${Object.keys(swB).join(', ')||'דירה'}) לתיקייה, בשם splitwise_<קבוצה>.csv. האתר קורא אותו לבד בכניסה. אם אין אפשרות לייצא: מסמך יתרות (category balances-snapshot, splitwiseGroup, observedAt) והוצאות חדשות (shared-expense) דרך אזור הקליטה.`});
   REQS().filter(r=>r.k!=='payslip'&&r.k!=='card').forEach(r=>{ const s=reqStatus(r); if(s.st!=='ok') T.push({id:'req-'+r.k,t:`להשיג: ${r.t}`,d:`${r.src}. כ־PDF לתיקייה. אם צריך הזדהות, תשלום או פרטים מזהים, לשאול אותי קודם.`}); });
   state.deadlines.filter(x=>{ const n=daysUntil(x.date); return n>=0&&n<=21; }).forEach(x=>T.push({id:'dl-'+x.id,t:`תזכורת: ${x.name}`,d:`עד ${shortDate(x.date)}. להזכיר לי בוואטסאפ שלושה ימים לפני.`}));
   return T;
@@ -2575,7 +2585,7 @@ async function instinctSync(interactive){
     if(files.length){
       await importFiles(files.map(x=>x.file));
       const r=impUI.res;
-      if(r&&!impUI.error){ const partial=(r.slips||[]).some(s=>s.partial), swOk=(r.sw||[]).every(g=>g.members.includes(state.prefs.swName));
+      if(r&&!impUI.error){ const partial=(r.slips||[]).some(s=>s.partial), swOk=(r.sw||[]).every(g=>!!swMe(g.members));
         if(!partial&&swOk&&(r.months.length||(r.slips||[]).length||(r.sw||[]).length||(r.cibus||[]).length)){ impUI.mode='replace'; saveImport(); auto=true; } }
       files.forEach(x=>state.instinct.files[x.id]=x.mt);
     }
@@ -3157,6 +3167,7 @@ async function refreshStaging(){
   try{ const L=await FB.listStaging(), have=new Set();
     (state.docs||[]).forEach(d=>{ if(d.id) have.add(d.id); const f=d.fields||{}; [f.sourceKey,...(f.sourceKeys||[])].forEach(k=>{ if(k) have.add(k); }); });
     const P=L.filter(x=>x.payload&&x.payload.document&&!have.has(x.payload.document.id)&&!(x.payload.dedupKeys||[]).some(k=>have.has(k))), n=P.length;
+    stagingUI.swSnaps=P.map(x=>({...x.payload.document,stagedAt:typeof x.stagedAt==='number'?x.stagedAt:0})).filter(d=>((d.fields||{}).category||'')==='balances-snapshot'||/balances/i.test(d.title));
     stagingUI.last=Math.max(0,...L.map(x=>typeof x.stagedAt==='number'?x.stagedAt:x.stagedAt&&x.stagedAt.seconds?x.stagedAt.seconds*1000:0));
     stagingUI.titles=P.sort((a,b)=>(b.stagedAt||0)-(a.stagedAt||0)).map(x=>x.payload.document.title);
     if(n!==stagingUI.n){ stagingUI.n=n; if((view.name==='docs'||view.name==='home')&&!document.querySelector('.backdrop')) render(); } }catch(e){}
