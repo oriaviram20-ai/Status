@@ -353,6 +353,11 @@ textarea{width:100%;min-height:90px;border:1px solid var(--line);background:var(
 .dh{display:flex;gap:12px;align-items:center;padding:11px 0;border:0;border-top:1px solid var(--line);width:100%;background:none;text-align:right}
 .dh:first-of-type{border-top:0}
 .dot{width:10px;height:10px;border-radius:50%;flex:none;display:inline-block}
+.ftag{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;color:var(--muted);margin-inline-start:8px;white-space:nowrap}
+.ftag.stale{color:var(--warn)} .ftag.miss{color:var(--danger)} .ftag .dot{width:8px;height:8px}
+.fstrip{display:flex;align-items:center;gap:14px;flex-wrap:wrap;width:100%;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:12px 16px;margin:0 0 14px;font:inherit;color:inherit;cursor:pointer;text-align:right}
+.fstrip span{display:inline-flex;align-items:center;gap:6px;font-weight:700} .fstrip small{color:var(--muted);flex:1;min-width:140px} .fstrip em{font-style:normal;color:var(--accent);font-weight:600;font-size:13px}
+.frow{align-items:flex-start;gap:10px} .frow .dot{margin-top:6px} .fval{font-weight:600;color:var(--muted);margin-inline-start:6px} .fnote{display:block;color:var(--muted);font-size:12px;margin-top:2px}
 .dot.ok{background:var(--accent)} .dot.stale{background:var(--warn)} .dot.miss{background:var(--danger)}
 .dh .t{flex:1;min-width:0} .dh .t b{display:block;font-size:15px;font-weight:600} .dh .t span{font-size:13px;color:var(--muted)}
 .dh-sum{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin:-4px 0 8px}
@@ -839,6 +844,82 @@ let downloadsCap=null;
 async function initDownloads(){ if(window.claude&&window.claude.use){ downloadsCap=await claude.use('downloads'); } }
 
 /* ---------- Calculations ---------- */
+
+/* ===== Data freshness: every number says when it was last checked, with a traffic light =====
+   ok = green (up to date), stale = yellow (check soon), miss = red (out of date). */
+const FST={ok:'מעודכן',stale:'כדאי לבדוק בקרוב',miss:'לא מעודכן'};
+const fAge=d=>d?daysSince(d):9999;
+const fLvl=(age,g,y)=>age<=g?'ok':age<=y?'stale':'miss';
+const isoOf=t=>t?isoLocal(new Date(t)):null;
+/* markets close on weekends: allow a bit more */
+const mktGreen=()=>{ const wd=new Date().getDay(); return wd===0||wd===1?3:wd===6?2:1; };
+function itemLastSeen(i){
+  const W=itemWords(i.name); let best=null;
+  if(W.length) state.tx.forEach(t=>{ if(t.a>0&&W.some(w=>norm(t.m).includes(w))&&Math.abs(t.a-i.amount)<=Math.max(3,i.amount*0.3)&&(!best||t.d>best.d)) best={d:t.d,src:'תנועה בכרטיס'}; });
+  (state.docs||[]).forEach(d=>{ const P=docBudgetPlan(d); const f=d.fields||{};
+    const hit=(P&&P.cat===i.cat&&norm(P.name)===norm(i.name))||(W.length&&W.some(w=>norm(d.title+' '+(f.provider||'')).includes(w))&&!/cancel|ביטול|בוטל/i.test((f.category||'')+d.title));
+    if(!hit) return; const dt=[f.paymentDate,f.expenseDate,f.splitwiseExpenseDate].find(x=>/^\d{4}-\d{2}-\d{2}/.test(x||''))||(d.period?d.period+'-28':null)||isoOf(d.ts);
+    if(dt&&(!best||dt.slice(0,10)>best.d)) best={d:dt.slice(0,10),src:'מסמך: '+d.title}; });
+  return best;
+}
+function itemFresh(i){
+  if(i.cat==='income'){ const ps=latestPayslip(); return {st:incomeLvl(ps),d:ps&&ps.period?ps.period+'-01':null,src:ps?'תלוש '+ps.period.split('-').reverse().join('/'):'אין תלוש'}; }
+  if(itemEnded(i)) return {st:'ok',d:i.end,src:'בוטל'};
+  const L=itemLastSeen(i); if(!L) return {st:'miss',d:null,src:'לא נמצא חיוב או מסמך'};
+  const per=(i.freq||1)*31; return {st:fLvl(fAge(L.d),per+10,per+40),d:L.d,src:L.src};
+}
+function latestPayslip(){ return (state.docs||[]).filter(d=>d.type==='payslip'&&/^\d{4}-\d{2}$/.test(d.period||'')).sort((a,b)=>b.period.localeCompare(a.period)||(b.issuer?1:0)-(a.issuer?1:0))[0]||null; }
+function incomeLvl(ps){ if(!ps) return 'miss'; const exp=ymShift(ymNow(),new Date().getDate()>=12?-1:-2); return ps.period>=exp?'ok':ps.period>=ymShift(exp,-1)?'stale':'miss'; }
+function freshList(){
+  const R=[], add=(k,g,label,val,d,st,src,note,goTo)=>R.push({k,g,label,val,d,st,src,note,go:goTo});
+  // income
+  const ps=latestPayslip(), emp=ps&&ps.issuer?ps.issuer.replace(/\s*בע"?מ\.?$/,''):'';
+  state.items.filter(i=>i.cat==='income').forEach(i=>add('inc-'+i.id,'הכנסות',`${i.name}${emp?' · '+emp:''}`,fmt(i.amount)+' נטו',ps&&ps.period?ps.period+'-01':null,incomeLvl(ps),ps?'תלוש שכר '+ps.period.split('-').reverse().join('/'):'אין תלוש באתר','נתון יציב: משתנה פעם בחודש, לפי התלוש. התלוש הבא צפוי עד ה־10 בחודש.',"go('income')"));
+  // card transactions
+  const imp=state.tx.filter(t=>t.src==='import').map(t=>t.d).sort().pop();
+  add('tx','הוצאות','תנועות בכרטיס',`${state.tx.filter(t=>t.d.slice(0,7)===ymNow()).length} החודש`,imp,fLvl(fAge(imp),7,14),'פירוט כרטיס אשראי','משתנה כל יום. כדאי פירוט חדש פעם בשבוע (Instinct או ייבוא קובץ).',"go('tx')");
+  // fixed payments
+  const its=state.items.filter(i=>i.cat!=='income'&&!itemEnded(i)).map(i=>({i,f:itemFresh(i)})), bad=its.filter(x=>x.f.st!=='ok');
+  add('fixed','הוצאות','תשלומים קבועים',`${its.length-bad.length} מתוך ${its.length} אומתו`,its.map(x=>x.f.d).filter(Boolean).sort().pop(),!bad.length?'ok':bad.filter(x=>x.f.st==='miss').length>its.length/3?'miss':'stale','חיובים בכרטיס ומסמכים',bad.length?'לא אומתו לאחרונה: '+bad.map(x=>x.i.name).slice(0,5).join(', '):'כל התשלומים הקבועים נראו בתנועות או במסמכים לאחרונה.',"go('cat','subs')");
+  // cibus
+  if(state.cibus&&state.cibus.budget){ const S=cibusStat(ymNow()), cd=state.cibus.checkedAt||(state.cibus.entries||[]).map(e=>e.d).sort().pop();
+    add('cibus','הוצאות','סיבוס',`נשאר ${fmt(S.left)}`,cd,fLvl(fAge(cd),2,5),'אישורי עסקה במייל','משתנה בכל ארוחה. נבדק מול מיילי האישור של סיבוס.',"go('cibus')"); }
+  // investments
+  state.holdings.forEach(h=>{ if(h.type==='cash'){ const d=(h.hist||[]).map(x=>x.d).sort().pop(); add('h-'+h.id,'השקעות',h.name,fmt(hVal(h)),d,fLvl(fAge(d),45,90),'דוח התיק','משתנה רק בהפקדה, קנייה או מכירה.',"go('invest')"); return; }
+    const T=h.track; if(T&&T.at){ add('h-'+h.id,'השקעות',h.name,'≈ '+fmt(hVal(h)),isoOf(T.at),fLvl(fAge(isoOf(T.at)),mktGreen(),5),`מחיר ${T.sym} בשוק (${T.last}$) מול דוח ${shortDate(T.refDate)}`,'משתנה כל יום מסחר. מתעדכן אוטומטית בכניסה לאתר. הערך הוא הערכה לפי מחיר השוק; הערך המדויק בדוח של בית ההשקעות.',"go('invest')"); }
+    else { const d=(h.hist||[]).map(x=>x.d).sort().pop(); add('h-'+h.id,'השקעות',h.name,fmt(hVal(h)),d,fLvl(fAge(d),mktGreen(),7),'עדכון ידני','משתנה כל יום מסחר, ואין לו מחיר חי. אפשר להוסיף סימול כדי שיתעדכן לבד.',"go('invest')"); } });
+  const base=state.holdings.map(h=>h.track&&h.track.refDate).filter(Boolean).sort().pop();
+  if(base) add('statement','השקעות','דוח מבית ההשקעות','',base,fLvl(fAge(base),45,90),'צילום או דוח מאקסלנס','כמות היחידות ועמלות. כדאי דוח חדש פעם בחודש-חודשיים.',"go('invest')");
+  // pension / savings
+  const sv=state.savings.filter(x=>!x.est&&x.acc); if(sv.length){ const old=sv.map(x=>x.acc).sort()[0], eom=old+'-'+String(dimOf(old)).padStart(2,'0'), d=eom>today()?today():eom;
+    add('pension','חיסכון',`פנסיה, גמל והשתלמות (${state.savings.length})`,fmt(savingsTotal()),d,fLvl(fAge(d),100,130),'דוח המסלקה הפנסיונית','משתנה לאט. הקופות מדווחות פעם ברבעון. הקופה הפעילה מוערכת לפי ההפקדות.',"go('savings')"); }
+  // fx
+  add('fx','שוק','שער הדולר',state.fx.usd?String(state.fx.usd):'—',state.fx.d,fLvl(fAge(state.fx.d),mktGreen(),5),state.fx.src==='google'?'Google Finance':state.fx.src==='market'?'הבנק המרכזי האירופי':'ידני','משתנה כל יום. מתעדכן אוטומטית בכניסה לאתר.',"go('invest')");
+  // splitwise
+  const sw=Object.values(swBalances()).map(x=>x.d).sort().pop(); if(sw) add('sw','שותפים','יתרות Splitwise',Object.entries(swBalances()).map(([g,x])=>`${g}: ${x.bal>=0?'חייבים לך':'אתה חייב'} ${fmt(Math.abs(x.bal))}`).join(' · '),sw,fLvl(fAge(sw),3,10),'Instinct / ייצוא Splitwise','משתנה בכל הוצאה משותפת.',"go('tx')");
+  // email via Instinct
+  add('mail','מקורות','סריקת המייל (Instinct)',stagingUI.n?`${stagingUI.n} מחכים לאישור`:'אין חדש',stagingUI.last?isoOf(stagingUI.last):null,fLvl(fAge(stagingUI.last?isoOf(stagingUI.last):null),1,3),'המייל הראשי והמשני, דרך Instinct','Instinct קורא את המיילים ושולח לכאן מסמכים. התאריך הוא הפעם האחרונה שהגיע ממנו משהו.',"location.href='document-intake.html'");
+  add('drive','מקורות','תיקיית Drive ומשימות ל־Instinct',state.instinct.on?'מחובר':'לא מחובר',isoOf(state.instinct.lastSync),state.instinct.on?fLvl(fAge(isoOf(state.instinct.lastSync)),1,3):'miss','Google Drive','מסונכרן אוטומטית בכניסה לאתר.',"go('instinct')");
+  const RS=reqSummary(); add('docs','מקורות','מסמכים נדרשים',`${RS.ok}/${RS.R.length} עדכניים`,null,RS.miss>2?'miss':RS.miss||RS.stale?'stale':'ok','תלושים, דוחות, פוליסות','לכל מסמך יש תוקף משלו.',"go('deadlines')");
+  return R;
+}
+function fCount(L){ L=L||freshList(); return {ok:L.filter(x=>x.st==='ok').length,stale:L.filter(x=>x.st==='stale').length,miss:L.filter(x=>x.st==='miss').length}; }
+function fTag(k){ const r=freshList().find(x=>x.k===k); if(!r) return ''; return `<span class="ftag ${r.st}" title="${FST[r.st]}"><i class="dot ${r.st}"></i>${r.d?'עודכן '+shortDate(r.d):FST[r.st]}</span>`; }
+function freshStrip(){
+  const L=freshList(), C=fCount(L), worst=L.filter(x=>x.st!=='ok').sort((a,b)=>(a.st==='miss'?0:1)-(b.st==='miss'?0:1)).slice(0,3);
+  return `<button class="fstrip" onclick="go('fresh')"><b>מצב הנתונים</b><span><i class="dot ok"></i>${C.ok}</span><span><i class="dot stale"></i>${C.stale}</span><span><i class="dot miss"></i>${C.miss}</span>
+    <small>${worst.length?'לבדוק: '+worst.map(x=>esc(x.label)).join(', '):'הכול מעודכן'}</small><em>פירוט ←</em></button>`;
+}
+function freshView(){
+  const L=freshList(), C=fCount(L), groups=[...new Set(L.map(x=>x.g))];
+  return `<button class="back" onclick="go('home')">→ חזרה</button>
+  <div class="page-head"><div><h1>מצב הנתונים</h1><p>מתי כל נתון עודכן, מאיפה הוא מגיע, והאם אפשר לסמוך עליו עכשיו</p></div><button class="btn primary" onclick="refreshAll(false)">🔄 בדוק הכול עכשיו</button></div>
+  <section class="panel"><div class="dh-sum"><span><i class="dot ok"></i>${C.ok} ${FST.ok}</span><span><i class="dot stale"></i>${C.stale} ${FST.stale}</span><span><i class="dot miss"></i>${C.miss} ${FST.miss}</span></div>
+    <p class="note" style="margin-bottom:0">ירוק: מעודכן. צהוב: עוד סביר, כדאי לבדוק בקרוב. אדום: ישן, לא לסמוך עליו לפני עדכון. כל סוג נתון נמדד לפי הקצב שבו הוא משתנה: משכורת פעם בחודש, מחירי שוק כל יום.</p></section>
+  ${groups.map(g=>`<section class="panel"><h3>${esc(g)}</h3>${L.filter(x=>x.g===g).map(x=>`<button class="dl frow" onclick="${x.go}" style="width:100%;background:none;border:0;text-align:right">
+     <i class="dot ${x.st}"></i><div class="t"><b>${esc(x.label)}${x.val?` <span class="fval">${N(esc(x.val))}</span>`:''}</b><span>${x.d?`עודכן ${shortDate(x.d)} (${fAge(x.d)===0?'היום':fAge(x.d)===1?'אתמול':'לפני '+fAge(x.d)+' ימים'})`:'אין תאריך עדכון'} · ${esc(x.src)}</span><span class="fnote">${esc(x.note)}</span></div><span class="chip ${x.st==='ok'?'ok':x.st==='stale'?'soon':'late'}">${FST[x.st]}</span></button>`).join('')}</section>`).join('')}`;
+}
+
 /* Next charge date of an item, ignoring any end date (looks up to 14 months ahead). */
 function nextChargeRaw(it,from){
   if(!it.day) return null; const start=new Date(from||new Date()); start.setHours(0,0,0,0);
@@ -1385,7 +1466,7 @@ function swBalances(){
   return B;
 }
 function swHomeCard(){ const E=Object.entries(swBalances()).filter(([,x])=>Math.abs(x.bal)>=1); if(!E.length) return '';
-  return `<section class="panel"><h3>🤝 Splitwise <button onclick="txUI.ym=ymNow();go('tx')">פירוט ←</button></h3>${E.map(([g,x])=>`<div class="dl"><div class="t"><b>${esc(g)}</b><span>נכון ל־${shortDate(x.d)}</span></div><b class="${x.bal<0?'down':'up'}">${N((x.bal>0?'חייבים לך ':'אתה חייב ')+fmt(Math.abs(x.bal)))}</b></div>`).join('')}</section>`; }
+  return `<section class="panel"><h3>🤝 Splitwise ${fTag('sw')}<button onclick="txUI.ym=ymNow();go('tx')">פירוט ←</button></h3>${E.map(([g,x])=>`<div class="dl"><div class="t"><b>${esc(g)}</b><span>נכון ל־${shortDate(x.d)}</span></div><b class="${x.bal<0?'down':'up'}">${N((x.bal>0?'חייבים לך ':'אתה חייב ')+fmt(Math.abs(x.bal)))}</b></div>`).join('')}</section>`; }
 function swBalHTML(){ const E=Object.entries(swBalances()); if(!E.length) return '';
   return `<section class="panel" style="padding-block:14px"><h3 style="margin-bottom:4px">🤝 Splitwise <button onclick="quickScan('import')">עדכון ←</button></h3>${E.map(([g,x])=>`<div class="dl"><div class="t"><b>${esc(g)}</b><span>${esc(x.me)} · נכון ל־${shortDate(x.d)}</span></div><b class="${x.bal<0?'down':'up'}">${Math.abs(x.bal)<1?'מאוזן ✓':N((x.bal>0?'חייבים לך ':'אתה חייב ')+fmt(Math.abs(x.bal)))}</b></div>`).join('')}</section>`; }
 
@@ -1747,7 +1828,7 @@ function applyMarketPrices(){
   if(n) recordSnapshot();
   return n;
 }
-const SP_STEPS=[['sync','סנכרון עם החשבון שלך'],['market','שער דולר, ריבית ואינפלציה'],['prices','מחירי ניירות ערך'],['auto','הוראות קבע והפקדות'],['docs','מסמכים נדרשים'],['kpi','מדדים ואתגרים'],['dates','מועדים קרובים'],['year','סיכום החודש']];
+const SP_STEPS=[['sync','סנכרון עם החשבון שלך'],['google','חיבור ל־Google'],['market','שער דולר, ריבית ואינפלציה'],['prices','השקעות לפי מחיר השוק'],['mail','מייל ו־Instinct'],['drive','תיקיית Drive'],['auto','הוראות קבע והפקדות'],['docs','מסמכים נדרשים'],['kpi','מדדים ואתגרים'],['dates','מועדים קרובים'],['year','סיכום החודש'],['fresh','מצב הנתונים']];
 let spState={}, splashOn=false, spTimer=null;
 function splashHTML(){
   return `<div class="splash" role="status" aria-live="polite"><div class="splash-in"><h1>מעדכן את הנתונים שלך</h1><p>אוסף את מה שהשתנה מאז הפעם הקודמת.</p>
@@ -1762,15 +1843,32 @@ async function refreshAll(first){
   setStep('sync','run','מתחבר...');
   await withTimeout(first?initCloud():pullCloud(),6000);
   setStep('sync',sync.mode==='cloud'?'ok':'warn',sync.mode==='cloud'?'המידע מסונכרן בין המכשירים':'נשמר במכשיר הזה בלבד');
+  let tok=null;
+  if(window.FB&&FB.user&&state.instinct&&state.instinct.on){
+    tok=FB.cachedToken&&FB.cachedToken();
+    if(!tok){ let tried=false; try{ tried=sessionStorage.getItem('st-gtok-auto')==='1'; }catch(e){}
+      if(!tried){ try{ sessionStorage.setItem('st-gtok-auto','1'); sessionStorage.setItem('st-gtok-auto-pending','1'); }catch(e){}
+        setStep('google','run','עובר רגע ל־Google לאישור וחוזר...'); await FB.googleToken(true); return; } }
+    setStep('google',tok?'ok':'warn',tok?'מחובר ל־Drive ול־Sheets':'לא התחבר ל־Google הפעם. מחירים חיים וסנכרון Drive ידלגו.');
+  } else setStep('google','warn','Google Drive לא מחובר. אפשר לחבר במסך Instinct.');
   setStep('market','run','בודק נתונים עדכניים...');
   await withTimeout(loadMarket(),5000);
   const fxChanged=applyMarketFx();
   if(market&&market.updatedAt){ const age=daysSince(market.updatedAt);
-    setStep('market',age>7?'warn':'ok',`מ־${shortDate(market.updatedAt)} · דולר ${market.fx?market.fx.usd:'—'} · ריבית ${market.boi?market.boi.rate:'—'}% · אינפלציה ${market.cpi?market.cpi.annual:'—'}%${age>7?' · כדאי לבקש עדכון':''}`); }
+    const fxAge=fAge(state.fx.d);
+    setStep('market',fxAge>3||age>35?'warn':'ok',`דולר ${state.fx.usd||'—'} (${state.fx.d?shortDate(state.fx.d):'—'}) · ריבית ${market.boi?market.boi.rate:'—'}% ואינפלציה ${market.cpi?market.cpi.annual:'—'}% נכון ל־${shortDate(market.updatedAt)}${age>35?' · ריבית ואינפלציה ישנות':''}`); }
   else setStep('market','warn','אין עדיין נתוני שוק. בקש מ־Claude בצ׳אט לעדכן.');
-  setStep('prices','run','משווה מחירים...');
-  const n=applyMarketPrices(), withTk=state.holdings.filter(h=>h.ticker).length;
-  setStep('prices',n?'ok':'warn',n?`עודכנו ${n} ניירות`:withTk?'אין מחירים חדשים לניירות שלך':'הוסף סימול לניירות כדי שיתעדכנו');
+  setStep('prices','run','בודק מחירים בשוק...');
+  const n=applyMarketPrices(); let live=0;
+  if(tok){ try{ const m=await withTimeout(sheetMarket(tok),15000); if(m&&m!=='timeout') live=applyLive(m); }catch(e){} }
+  const LH=state.holdings.find(h=>h.track&&h.track.at&&Date.now()-h.track.at<6e5);
+  setStep('prices',live?'ok':'warn',live?[LH?`${LH.track.sym} ${LH.track.last}$ · התיק ≈ ${fmt(portfolio().value)}`:'',state.fx.src==='google'?`דולר ${state.fx.usd}`:''].filter(Boolean).join(' · '):tok?'Google Finance לא החזיר מחירים הפעם':'בלי חיבור ל־Google אין מחירים חיים');
+  setStep('mail','run','בודק מה Instinct הביא מהמייל...');
+  stagingUI.at=0; await withTimeout(refreshStaging(),6000);
+  setStep('mail',stagingUI.last&&Date.now()-stagingUI.last<3*864e5?'ok':'warn',`${stagingUI.n?stagingUI.n+' פריטים מחכים לאישור':'אין פריטים חדשים'}${stagingUI.last?' · Instinct שלח לאחרונה ב־'+shortDate(isoOf(stagingUI.last)):''}`);
+  if(tok){ setStep('drive','run','מסנכרן את התיקייה ומעדכן משימות וסיכום...'); await withTimeout(instinctSync(false),25000);
+    setStep('drive',inUI.err?'warn':'ok',inUI.err?inUI.err.slice(0,80):`סונכרן · ${(state.instinct.log[0]||{}).files||0} קבצים חדשים`); }
+  else setStep('drive','warn','דילגתי: אין חיבור ל־Google');
   setStep('auto','run','מחשב...');
   const so=applyStandingOrders(), ac=accrueSavings();
   setStep('auto','ok',so||ac?[so?`${so} קניות מהוראות קבע`:'',ac?`${ac} הפקדות לקופות`:''].filter(Boolean).join(' · '):'אין פעולות חדשות החודש');
@@ -1784,9 +1882,10 @@ async function refreshAll(first){
   const recChanged=recordMonth(), YS=yearStats(new Date().getFullYear());
   setStep('year','ok',YS?`${YS.n} חודשים במעקב ב־${YS.y}${YS.nwD!=null?` · ההון ${YS.nwD>=0?'עלה':'ירד'} ב־${fmt(Math.abs(YS.nwD))}`:''}`:'החודש נשמר לסיכום השנה');
   const dz=fillItemDays();
-  if(fxChanged||n||recChanged||so||ac||dz) save();
+  const FC=fCount(); setStep('fresh',FC.miss?'warn':'ok',`${FC.ok} מעודכנים · ${FC.stale} לבדוק בקרוב · ${FC.miss} לא מעודכנים`);
+  if(fxChanged||n||live||recChanged||so||ac||dz) save();
   render();
-  spTimer=setTimeout(()=>{ if(splashOn) endSplash(); },1500);
+  spTimer=setTimeout(()=>{ if(splashOn) endSplash(); },2500);
 }
 function marketPanel(){
   const m=market; if(!m||!m.updatedAt) return '';
@@ -2324,7 +2423,8 @@ const inUI={busy:false,msg:'',err:'',skipped:[]};
 const inBack=(function(){
   const h=location.hash||''; if(!/[#&](access_token|error)=/.test(h)) return null;
   const p=new URLSearchParams(h.slice(1)); let ok=false; try{ ok=!!p.get('state')&&p.get('state')===sessionStorage.getItem('st-oauth-state'); sessionStorage.removeItem('st-oauth-state'); }catch(e){}
-  try{ history.replaceState(null,'',location.pathname+location.search+'#instinct'); }catch(e){}
+  let autoBack=false; try{ autoBack=sessionStorage.getItem('st-gtok-auto-pending')==='1'; sessionStorage.removeItem('st-gtok-auto-pending'); if(autoBack) sessionStorage.removeItem('st-gtok-pending'); }catch(e){}
+  try{ history.replaceState(null,'',location.pathname+location.search+(autoBack?'#home':'#instinct')); }catch(e){}
   if(!ok) return {err:'הבקשה לא אומתה. נסה שוב.'};
   if(p.get('error')){ try{ sessionStorage.removeItem('st-gtok-pending'); }catch(e){} return {err:p.get('error')==='access_denied'?'לא אושרה גישה ל־Drive.':'Google החזיר שגיאה: '+p.get('error')}; }
   const sc=p.get('scope')||''; if(!/drive\.readonly/.test(sc)) { try{ sessionStorage.removeItem('st-gtok-pending'); }catch(e){} return {err:'צריך לסמן את הגישה לקבצים ב־Drive בחלון של Google. נסה שוב וסמן את כל התיבות.'}; }
@@ -2373,6 +2473,32 @@ function inTasks(){
   REQS().filter(r=>r.k!=='payslip'&&r.k!=='card').forEach(r=>{ const s=reqStatus(r); if(s.st!=='ok') T.push({id:'req-'+r.k,t:`להשיג: ${r.t}`,d:`${r.src}. כ־PDF לתיקייה. אם צריך הזדהות, תשלום או פרטים מזהים, לשאול אותי קודם.`}); });
   state.deadlines.filter(x=>{ const n=daysUntil(x.date); return n>=0&&n<=21; }).forEach(x=>T.push({id:'dl-'+x.id,t:`תזכורת: ${x.name}`,d:`עד ${shortDate(x.date)}. להזכיר לי בוואטסאפ שלושה ימים לפני.`}));
   return T;
+}
+const T_MK='שוק';
+/* Live prices through the Status sheet in your own Drive (GOOGLEFINANCE). No extra keys, nothing new to approve. */
+async function sheetMarket(tok){
+  const id=state.instinct.sheetId; if(!id) return null;
+  const meta=await gfetch(tok,`${SAPI}/${id}?fields=sheets(properties(title))`);
+  if(!(meta.sheets||[]).some(x=>x.properties.title===T_MK)) await gfetch(tok,`${SAPI}/${id}:batchUpdate`,{method:'POST',body:JSON.stringify({requests:[{addSheet:{properties:{title:T_MK}}}]})});
+  const rows=[['usd','=GOOGLEFINANCE("CURRENCY:USDILS")'],['eur','=GOOGLEFINANCE("CURRENCY:EURILS")'],['spx','=GOOGLEFINANCE("INDEXSP:.INX","price")']];
+  [...new Set(state.holdings.map(h=>h.track&&h.track.sym).filter(Boolean))].forEach(x=>rows.push(['px:'+x,`=GOOGLEFINANCE("${String(x).replace(/[^A-Za-z0-9:._-]/g,'')}","price")`]));
+  const rng=sheetRange(T_MK,`A1:B${rows.length}`);
+  await gfetch(tok,`${SAPI}/${id}/values/${encodeURIComponent(rng)}?valueInputOption=USER_ENTERED`,{method:'PUT',body:JSON.stringify({values:rows})});
+  let m={};
+  for(let k=0;k<4;k++){ await new Promise(r=>setTimeout(r,1500+k*1000));
+    const v=await gfetch(tok,`${SAPI}/${id}/values/${encodeURIComponent(rng)}?valueRenderOption=UNFORMATTED_VALUE`);
+    m={}; (v.values||[]).forEach(r=>{ if(typeof r[1]==='number') m[r[0]]=r[1]; }); if(rows.every(r=>m[r[0]]!=null)) break; }
+  return m;
+}
+/* Value now = value in the last statement x price change x dollar change */
+function applyLive(m){
+  if(!m) return 0; let n=0;
+  if(m.usd>2&&m.usd<6){ state.fx={usd:+m.usd.toFixed(4),src:'google',d:today()}; n++; }
+  state.live={at:Date.now(),usd:m.usd||null,eur:m.eur||null,spx:m.spx||null};
+  state.holdings.forEach(h=>{ const T=h.track; if(!T||!T.sym) return; const p=m['px:'+T.sym]; if(!(p>0)) return;
+    const fxNow=T.cur==='USD'?(m.usd||state.fx.usd):1; h.price=Math.round(T.refValue*(p*fxNow)/(T.refPrice*(T.refFx||1))*100)/100; h.units=1; h.cur='ILS';
+    T.last=p; T.at=Date.now(); h.hist=h.hist||[]; const l=h.hist[h.hist.length-1]; if(l&&l.d===today()) l.p=h.price; else h.hist.push({d:today(),p:h.price}); n++; });
+  if(n) recordSnapshot(); return n;
 }
 const T_SUM='סיכום';
 /* A short summary Instinct can read and send you on WhatsApp. Only totals, no account details. */
@@ -2508,7 +2634,7 @@ function cibusStat(ym){
 function cibusCard(){
   if(!state.cibus.budget) return '';
   const S=cibusStat(ymNow()), p=S.budget?Math.min(100,S.spent/S.budget*100):0;
-  return `<section class="panel"><h3>💳 סיבוס <button onclick="go('cibus')">פירוט ←</button></h3>
+  return `<section class="panel"><h3>💳 סיבוס ${fTag('cibus')}<button onclick="go('cibus')">פירוט ←</button></h3>
     <div class="flow" style="margin-top:0"><div><span>נשאר החודש</span><b class="${S.left<0?'down':''}">${N(fmt(S.left))}</b></div><div><span>${S.wl?'ליום עבודה':'החודש'}</span><b>${S.perDay!=null&&S.left>0?N(fmt(S.perDay)):'—'}</b></div></div>
     <div class="bar" aria-hidden="true"><i style="width:${p}%;background:${S.left<0?'var(--danger)':'var(--accent)'}"></i></div>
     <p class="note" style="margin-top:6px">${N(fmt(S.spent))} מתוך ${N(fmt(S.budget))} · ${S.L.length} ארוחות · לא נספר בהוצאות שלך</p></section>`;
@@ -2564,6 +2690,7 @@ async function cibusFile(f){
 }
 function cibusSave(r){
   let n=0; const keys=new Set((state.cibus.entries||[]).map(e=>e.key).filter(Boolean));
+  if((r.cibus||[]).length) state.cibus.checkedAt=today();
   (r.cibus||[]).forEach(g=>g.rows.forEach(x=>{ if(keys.has(x.key)) return; keys.add(x.key); state.cibus.entries.push({id:uid(),...x,src:'import'}); n++; }));
   return n;
 }
@@ -2590,7 +2717,7 @@ ${sheet}
 • לעבור על קבלות הסיבוס במייל ולשים בתיקייה קובץ cibus_YYYY-MM.csv עם העמודות: תאריך, מסעדה, סכום. שורה לכל ארוחה. בכל עדכון אפשר לשים את כל החודש מחדש, האתר לא יכפיל.
 • לעבור על הלשונית "${T_TASKS}" ולטפל בכל מה שפתוח. שם מופיעים גם מסמכים חסרים, כמו ארנונה, פוליסות ודוחות פנסיה.
 
-4. חשבונות ומסמכים שאתה מוצא במייל (חשמל, ארנונה, ביטוחים, הוצאות Splitwise, מועדים) ממשיכים כמו היום דרך אזור הקליטה הפרטי:
+4. פעם ביום לעבור על המייל הראשי ועל המייל המשני. חשבונות ומסמכים שאתה מוצא (חשמל, ארנונה, ביטוחים, הוצאות Splitwise, ביטולי מנויים, מועדים) שולחים דרך אזור הקליטה הפרטי. האתר מציג מתי שלחת משהו בפעם האחרונה, ואם עבר יותר מיום הוא מסומן בצהוב:
 https://oriaviram20-ai.github.io/Status/document-intake.html
 אני מאשר שם כל מסמך, ומשם אפשר להפוך חשבון לתשלום קבוע בתקציב.
 את הלשונית "${T_FROM}" בגיליון כבר לא צריך.
@@ -2630,7 +2757,7 @@ function instinctView(){
 }
 
 let view = {name:'home'};
-const VALID = ['home','goals','year','widgets','auto','invest','savings','docs','deadlines','tx','budget','more','future','tools','learn','wb','instinct','cibus',...Object.keys(CATS)];
+const VALID = ['fresh','home','goals','year','widgets','auto','invest','savings','docs','deadlines','tx','budget','more','future','tools','learn','wb','instinct','cibus',...Object.keys(CATS)];
 function go(name,cat){ view={name,cat}; render(); window.scrollTo(0,0); }
 function render(){
   applyPrefs();
@@ -2655,6 +2782,7 @@ function render(){
   else if(v==='wb') app.innerHTML=wbView();
   else if(v==='instinct') app.innerHTML=instinctView();
   else if(v==='cibus') app.innerHTML=cibusView();
+  else if(v==='fresh') app.innerHTML=freshView();
   const on=k=>v===k||(k==='home'&&(v==='widgets'||v==='cat'))||(k==='more'&&!['home','widgets','cat','tx','budget'].includes(v));
   const tb=([k,l])=>`<button class="tab ${on(k)?'on':''}" onclick="go('${k}')" aria-current="${on(k)?'page':'false'}">${ICONS[k]}<span>${l}</span></button>`;
   document.getElementById('tabs').innerHTML=`<div class="tabs-in">${tb(['home','בית'])}${tb(['tx','תנועות'])}<button class="tab-plus" aria-label="הוספה וסריקה" onclick="openQuick()">${ICONS.plus}</button>${tb(['budget','תקציב'])}${tb(['more','עוד'])}</div>`;
@@ -2683,6 +2811,7 @@ function homeView(){
     <button class="kc adv" onclick="go('invest')"><small>ההון שלך</small><b>${N(fmt(p.value+sv))}</b><span class="s">${ch&&!state.prefs.lazy?`<span class="${signCls(ch.pct)}">${N(pctStr(ch.pct))}</span> מאז העדכון`:`השקעות ${N(fmt(p.value))}`}</span></button>
     <button class="kc dark adv" onclick="go('goals')"><small>מדדים ביעד</small><b>${N(sc.good+'/'+sc.total)}</b><div class="kbar" aria-hidden="true">${K.filter(k=>k.status!=='info').map(k=>`<i class="${k.status}"></i>`).join('')}</div></button>
   </div>
+  ${freshStrip()}
   <div class="home-grid">
     <div class="col">
       ${simple()?'':inboxPanel(6)}
@@ -2814,10 +2943,12 @@ function delCh(id){ state.challenges=state.challenges.filter(x=>x.id!==id); save
 function catView(c){
   const all=state.items.filter(i=>i.cat===c), items=all.filter(i=>!itemEnded(i)), ended=all.filter(itemEnded);
   const sum=items.reduce((a,i)=>a+monthly(i),0);
-  const when=i=>{ if(!i.day) return `<span style="color:var(--warn)">⚠️ חסר יום חיוב</span>`; const n=chargeDates(i,new Date(),400)[0]||nextChargeRaw(i);
+  const when=i=>{ if(i.cat==='income'){ const F=itemFresh(i), ps=latestPayslip(); return `${ps&&ps.issuer?esc(ps.issuer)+' · ':''}<i class="dot ${F.st}" style="width:8px;height:8px;vertical-align:middle"></i> לפי ${esc(F.src)}${i.day?` · נכנס ב־${i.day} לחודש`:''}`; }
+    if(!i.day){ const F=itemFresh(i); return `<span style="color:var(--warn)">⚠️ חסר יום חיוב</span><br><i class="dot ${F.st}" style="width:8px;height:8px;vertical-align:middle"></i> ${F.d?'אומת '+shortDate(F.d):'לא אומת'} · ${esc(F.src)}`; } const n=chargeDates(i,new Date(),400)[0]||nextChargeRaw(i);
     const base=i.freq>1?`${FREQ[i.freq]} · ב־${i.day} לחודש`:`נגבה ב־${i.day} לכל חודש`;
     if(i.end) return `${base} · <b class="down">מבוטל, פעיל עד ${shortDate(i.end)}</b>`;
-    return `${base}${n?` · הבא ${shortDate(n)}`:''}${i.dayAuto?' · זוהה מהתנועות':''}`; };
+    const F=itemFresh(i);
+    return `${base}${n?` · הבא ${shortDate(n)}`:''}${i.dayAuto?' · זוהה מהתנועות':''}<br><i class="dot ${F.st}" style="width:8px;height:8px;vertical-align:middle"></i> ${F.d?'אומת '+shortDate(F.d):'לא אומת'} · ${esc(F.src)}`; };
   const row=i=>`<button class="row" onclick="editItem('${i.id}')"${itemEnded(i)?' style="opacity:.6"':''}><div class="t"><b>${esc(i.name)}</b><span>${when(i)}</span></div><div class="amt">${N(fmt(i.amount))}${i.freq>1?`<small class="note" style="margin:0">${N(fmt(i.amount/i.freq))} לחודש</small>`:''}</div></button>`;
   return `
   <button class="back" onclick="go('home')">→ חזרה</button>
@@ -2837,7 +2968,7 @@ function investView(){
   const usdShare=p.value?p.byCur.USD/p.value*100:0;
   const hs=[...state.holdings].sort((a,b)=>hVal(b)-hVal(a));
   return `
-  <div class="page-head"><div><h1>השקעות</h1><p>הכסף שעובד בשבילך לאורך זמן</p></div>
+  <div class="page-head"><div><h1>השקעות</h1><p>הכסף שעובד בשבילך לאורך זמן ${state.holdings.filter(h=>h.type!=='cash').map(h=>fTag('h-'+h.id)).join('')}</p></div>
     <button class="toggle" aria-pressed="${lazy}" onclick="toggleLazy()" title="מסתיר תנודות קצרות טווח">🦥 מצב עצלן</button></div>
   <div class="grid two">
     <div class="col">
@@ -2978,7 +3109,7 @@ function savingsView(){
   const list=[...state.savings].sort((a,b)=>(b.balance||0)-(a.balance||0));
   return `
   <button class="back" onclick="go('home')">→ חזרה</button>
-  <div class="page-head"><div><h1>🏦 חיסכון ופנסיה</h1><p>פנסיה, השתלמות, גמל וקרן חירום</p></div><div class="sum">${N(fmt(tot))}</div></div>
+  <div class="page-head"><div><h1>🏦 חיסכון ופנסיה</h1><p>פנסיה, השתלמות, גמל וקרן חירום ${fTag('pension')}</p></div><div class="sum">${N(fmt(tot))}</div></div>
   <section class="panel">
     ${list.length?list.map(s=>`<button class="row" onclick="editSaving('${s.id}')"><div class="t"><b>${esc(s.name)}</b><span>${SAV_TYPES[s.type]}${s.monthly?` · ${N(fmt(s.monthly))} בחודש`:''}${s.accFee||s.depFee?` · דמי ניהול ${N((s.depFee||0)+'%')} מהפקדה, ${N((s.accFee||0)+'%')} מצבירה`:''}</span></div><div class="amt">${N(fmt(s.balance))}${s.est?'<small style="color:var(--muted);font-weight:500">מוערך</small>':''}${feeFlag(s)?`<small><span class="chip soon">שווה לבדוק</span></small>`:''}</div></button>`).join('')
       :`<p class="empty">הוסף את קרן הפנסיה, ההשתלמות וקרן החירום. אפשר גם לצלם את הדוח השנתי והאתר ימלא.</p>`}
@@ -3020,12 +3151,13 @@ function delSaving(id){ state.savings=state.savings.filter(x=>x.id!==id); save()
 const docUI={type:'auto',file:null,url:null,busy:false,result:null,error:'',done:false};
 let docCtl=null;
 /* Instinct's private intake area (document-intake.html): show how many records wait for review. Read only. */
-const stagingUI={n:null,at:0};
+const stagingUI={n:null,at:0,last:0};
 async function refreshStaging(){
   if(!(window.FB&&FB.user&&FB.listStaging)||Date.now()-stagingUI.at<60000) return; stagingUI.at=Date.now();
   try{ const L=await FB.listStaging(), have=new Set();
     (state.docs||[]).forEach(d=>{ if(d.id) have.add(d.id); const f=d.fields||{}; [f.sourceKey,...(f.sourceKeys||[])].forEach(k=>{ if(k) have.add(k); }); });
     const P=L.filter(x=>x.payload&&x.payload.document&&!have.has(x.payload.document.id)&&!(x.payload.dedupKeys||[]).some(k=>have.has(k))), n=P.length;
+    stagingUI.last=Math.max(0,...L.map(x=>typeof x.stagedAt==='number'?x.stagedAt:x.stagedAt&&x.stagedAt.seconds?x.stagedAt.seconds*1000:0));
     stagingUI.titles=P.sort((a,b)=>(b.stagedAt||0)-(a.stagedAt||0)).map(x=>x.payload.document.title);
     if(n!==stagingUI.n){ stagingUI.n=n; if((view.name==='docs'||view.name==='home')&&!document.querySelector('.backdrop')) render(); } }catch(e){}
 }
