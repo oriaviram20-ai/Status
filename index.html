@@ -355,6 +355,7 @@ textarea{width:100%;min-height:90px;border:1px solid var(--line);background:var(
 .dot{width:10px;height:10px;border-radius:50%;flex:none;display:inline-block}
 .ftag{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;color:var(--muted);margin-inline-start:8px;white-space:nowrap}
 .ftag.stale{color:var(--warn)} .ftag.miss{color:var(--danger)} .ftag .dot{width:8px;height:8px}
+.steps-ol{padding-inline-start:20px;line-height:1.6;margin:10px 0} .steps-ol li{margin-bottom:8px}
 .fstrip{display:flex;align-items:center;gap:14px;flex-wrap:wrap;width:100%;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:12px 16px;margin:0 0 14px;font:inherit;color:inherit;cursor:pointer;text-align:right}
 .fstrip span{display:inline-flex;align-items:center;gap:6px;font-weight:700} .fstrip small{color:var(--muted);flex:1;min-width:140px} .fstrip em{font-style:normal;color:var(--accent);font-weight:600;font-size:13px}
 .frow{align-items:flex-start;gap:10px} .frow .dot{margin-top:6px} .fval{font-weight:600;color:var(--muted);margin-inline-start:6px} .fnote{display:block;color:var(--muted);font-size:12px;margin-top:2px}
@@ -896,7 +897,7 @@ function freshList(){
   // fx
   add('fx','שוק','שער הדולר',state.fx.usd?String(state.fx.usd):'—',state.fx.d,fLvl(fAge(state.fx.d),mktGreen(),5),state.fx.src==='google'?'Google Finance':state.fx.src==='market'?'הבנק המרכזי האירופי':'ידני','משתנה כל יום. מתעדכן אוטומטית בכניסה לאתר.',"go('invest')");
   // splitwise
-  const sw=Object.values(swBalances()).map(x=>x.d).sort().pop(); if(sw) add('sw','שותפים','יתרות Splitwise',Object.entries(swBalances()).map(([g,x])=>`${g}: ${x.bal>=0?'חייבים לך':'אתה חייב'} ${fmt(Math.abs(x.bal))}`).join(' · '),sw,fLvl(fAge(sw),2,5),'Instinct / ייצוא Splitwise','משתנה כמעט כל יום. Instinct מקבל משימה יומית לעדכן כשהיתרות בנות יומיים ומעלה.',"go('tx')");
+  const sw=Object.values(swBalances()).map(x=>x.d).sort().pop(); if(sw) add('sw','שותפים','יתרות Splitwise',Object.entries(swBalances()).map(([g,x])=>`${g}: ${x.bal>=0?'חייבים לך':'אתה חייב'} ${fmt(Math.abs(x.bal))}`).join(' · '),sw,fLvl(fAge(sw),2,5),Object.values(state.splitwise||{}).some(x=>x.src==='api')?'חיבור ישיר ל־Splitwise (כל שעה)':'Instinct / ייצוא Splitwise',Object.values(state.splitwise||{}).some(x=>x.src==='api')?'מתעדכן לבד כל שעה דרך הסקריפט בחשבון Google שלך.':'משתנה כמעט כל יום. לחיצה כאן: הוראות לחיבור אוטומטי.',Object.values(state.splitwise||{}).some(x=>x.src==='api')?"go('tx')":"swSetup()");
   // email via Instinct
   add('mail','מקורות','סריקת המייל (Instinct)',stagingUI.n?`${stagingUI.n} מחכים לאישור`:'אין חדש',stagingUI.last?isoOf(stagingUI.last):null,fLvl(fAge(stagingUI.last?isoOf(stagingUI.last):null),1,3),'המייל הראשי והמשני, דרך Instinct','Instinct קורא את המיילים ושולח לכאן מסמכים. התאריך הוא הפעם האחרונה שהגיע ממנו משהו.',"location.href='document-intake.html'");
   add('drive','מקורות','תיקיית Drive ומשימות ל־Instinct',state.instinct.on?'מחובר':'לא מחובר',isoOf(state.instinct.lastSync),state.instinct.on?fLvl(fAge(isoOf(state.instinct.lastSync)),1,3):'miss','Google Drive','מסונכרן אוטומטית בכניסה לאתר.',"go('instinct')");
@@ -1465,7 +1466,7 @@ function swSave(r){
 }
 /* Latest Splitwise balance per group: from CSV imports (state.splitwise) and from Instinct's "balances-snapshot" documents. Positive = friends owe you. */
 function swBalances(){
-  const B={}; Object.entries(state.splitwise||{}).forEach(([g,x])=>B[g]={bal:x.bal,d:x.d,me:x.me||''});
+  const B={}; Object.entries(state.splitwise||{}).forEach(([g,x])=>B[g]={bal:x.bal,d:x.d,me:x.me||'',debts:x.debts||[]});
   (state.docs||[]).forEach(d=>{ const f=d.fields||{}; if(f.category!=='balances-snapshot') return; const g=f.splitwiseGroup||Object.keys(state.splitwise||{}).find(k=>(d.title+' '+(d.insight||'')).includes(k))||'Splitwise'; const at=String(f.observedAt||d.period||'').slice(0,10);
     const A=d.amounts||[], rec=A.find(a=>/לקבלת|owed to you|you are owed/i.test(a.label)), pay=A.find(a=>/לתשלום|you owe/i.test(a.label));
     const bal=rec?num(rec.value):pay?-num(pay.value):null; if(bal==null) return;
@@ -1477,7 +1478,9 @@ function swBalances(){
   return B;
 }
 function swHomeCard(){ const E=Object.entries(swBalances()).filter(([,x])=>Math.abs(x.bal)>=1); if(!E.length) return '';
-  return `<section class="panel"><h3>🤝 Splitwise ${fTag('sw')}<button onclick="txUI.ym=ymNow();go('tx')">פירוט ←</button></h3>${E.map(([g,x])=>`<div class="dl"><div class="t"><b>${esc(g)}</b><span>נכון ל־${shortDate(x.d)}</span></div><b class="${x.bal<0?'down':'up'}">${N((x.bal>0?'חייבים לך ':'אתה חייב ')+fmt(Math.abs(x.bal)))}</b></div>`).join('')}</section>`; }
+  const api=Object.values(state.splitwise||{}).some(x=>x.src==='api');
+  return `<section class="panel"><h3>🤝 Splitwise ${fTag('sw')}<button onclick="txUI.ym=ymNow();go('tx')">פירוט ←</button></h3>${E.map(([g,x])=>`<div class="dl"><div class="t"><b>${esc(g)}</b><span>נכון ל־${shortDate(x.d)}${(x.debts||[]).length?' · '+x.debts.map(y=>esc(y.dir==='owes_me'?`${y.who} חייב/ת לך ${fmt(y.a)}`:`אתה חייב ל${y.who} ${fmt(y.a)}`)).join(' · '):''}</span></div><b class="${x.bal<0?'down':'up'}">${N((x.bal>0?'חייבים לך ':'אתה חייב ')+fmt(Math.abs(x.bal)))}</b></div>`).join('')}
+    ${api?'':`<button class="link" style="margin-top:6px" onclick="swSetup()">חיבור אוטומטי ל־Splitwise, מתעדכן כל שעה ←</button>`}</section>`; }
 function swBalHTML(){ const E=Object.entries(swBalances()); if(!E.length) return '';
   return `<section class="panel" style="padding-block:14px"><h3 style="margin-bottom:4px">🤝 Splitwise <button onclick="quickScan('import')">עדכון ←</button></h3>${E.map(([g,x])=>`<div class="dl"><div class="t"><b>${esc(g)}</b><span>${esc(x.me)} · נכון ל־${shortDate(x.d)}</span></div><b class="${x.bal<0?'down':'up'}">${Math.abs(x.bal)<1?'מאוזן ✓':N((x.bal>0?'חייבים לך ':'אתה חייב ')+fmt(Math.abs(x.bal)))}</b></div>`).join('')}</section>`; }
 
@@ -1839,7 +1842,7 @@ function applyMarketPrices(){
   if(n) recordSnapshot();
   return n;
 }
-const SP_STEPS=[['sync','סנכרון עם החשבון שלך'],['google','חיבור ל־Google'],['market','שער דולר, ריבית ואינפלציה'],['prices','השקעות לפי מחיר השוק'],['mail','מייל ו־Instinct'],['drive','תיקיית Drive'],['auto','הוראות קבע והפקדות'],['docs','מסמכים נדרשים'],['kpi','מדדים ואתגרים'],['dates','מועדים קרובים'],['year','סיכום החודש'],['fresh','מצב הנתונים']];
+const SP_STEPS=[['sync','סנכרון עם החשבון שלך'],['google','חיבור ל־Google'],['market','שער דולר, ריבית ואינפלציה'],['prices','השקעות לפי מחיר השוק'],['mail','מייל ו־Instinct'],['drive','תיקיית Drive'],['splitwise','Splitwise'],['auto','הוראות קבע והפקדות'],['docs','מסמכים נדרשים'],['kpi','מדדים ואתגרים'],['dates','מועדים קרובים'],['year','סיכום החודש'],['fresh','מצב הנתונים']];
 let spState={}, splashOn=false, spTimer=null;
 function splashHTML(){
   return `<div class="splash" role="status" aria-live="polite"><div class="splash-in"><h1>מעדכן את הנתונים שלך</h1><p>אוסף את מה שהשתנה מאז הפעם הקודמת.</p>
@@ -1880,6 +1883,10 @@ async function refreshAll(first){
   if(tok){ setStep('drive','run','מסנכרן את התיקייה ומעדכן משימות וסיכום...'); await withTimeout(instinctSync(false),25000);
     setStep('drive',inUI.err?'warn':'ok',inUI.err?inUI.err.slice(0,80):`סונכרן · ${(state.instinct.log[0]||{}).files||0} קבצים חדשים`); }
   else setStep('drive','warn','דילגתי: אין חיבור ל־Google');
+  let swn=null;
+  if(tok){ setStep('splitwise','run','בודק את Splitwise...'); try{ const rows=await withTimeout(sheetSplitwise(tok),10000); if(rows&&rows!=='timeout') swn=applySplitwiseApi(rows); }catch(e){} }
+  { const B=swBalances(), last=Object.values(B).map(x=>x.d).sort().pop();
+    setStep('splitwise',swn&&fAge(isoOf(swn.at))<=1?'ok':'warn',swn?`${Object.entries(B).map(([g,x])=>`${g}: ${x.bal>=0?'חייבים לך':'אתה חייב'} ${fmt(Math.abs(x.bal))}`).join(' · ')} · עודכן ${new Date(swn.at).toLocaleString('he-IL',{day:'numeric',month:'numeric',hour:'2-digit',minute:'2-digit'})}${swn.n?` · ${swn.n} הוצאות חדשות`:''}`:`אין חיבור ישיר${last?' · היתרות מ־'+shortDate(last):''}. אפשר לחבר במסך מצב הנתונים`); }
   setStep('auto','run','מחשב...');
   const so=applyStandingOrders(), ac=accrueSavings();
   setStep('auto','ok',so||ac?[so?`${so} קניות מהוראות קבע`:'',ac?`${ac} הפקדות לקופות`:''].filter(Boolean).join(' · '):'אין פעולות חדשות החודש');
@@ -1894,7 +1901,7 @@ async function refreshAll(first){
   setStep('year','ok',YS?`${YS.n} חודשים במעקב ב־${YS.y}${YS.nwD!=null?` · ההון ${YS.nwD>=0?'עלה':'ירד'} ב־${fmt(Math.abs(YS.nwD))}`:''}`:'החודש נשמר לסיכום השנה');
   const dz=fillItemDays();
   const FC=fCount(); setStep('fresh',FC.miss?'warn':'ok',`${FC.ok} מעודכנים · ${FC.stale} לבדוק בקרוב · ${FC.miss} לא מעודכנים`);
-  if(fxChanged||n||live||recChanged||so||ac||dz) save();
+  if(fxChanged||n||live||swn||recChanged||so||ac||dz) save();
   render();
   spTimer=setTimeout(()=>{ if(splashOn) endSplash(); },2500);
 }
@@ -2510,6 +2517,50 @@ function applyLive(m){
     T.last=p; T.at=Date.now(); h.hist=h.hist||[]; const l=h.hist[h.hist.length-1]; if(l&&l.d===today()) l.p=h.price; else h.hist.push({d:today(),p:h.price}); n++; });
   if(n) recordSnapshot(); return n;
 }
+const T_SW='Splitwise';
+/* Splitwise through a small Google Apps Script in your own account (the API key stays there).
+   The script writes a "Splitwise" tab every hour; the site reads it on entry. */
+const SW_GAS="/* Status · Splitwise sync\n   Runs in your own Google account (script.google.com). Every hour it reads Splitwise\n   and writes balances and recent expenses to the \"Splitwise\" tab of your Status sheet.\n   The API key is kept only in this project's Script Properties, never in the site's code. */\nconst SHEET_ID = '__SHEET_ID__';\nconst SW = 'https://secure.splitwise.com/api/v3.0/';\nconst TZ = 'Asia/Jerusalem';\n\nfunction sw_(path) {\n  const key = PropertiesService.getScriptProperties().getProperty('SPLITWISE_API_KEY');\n  if (!key) throw new Error('Missing SPLITWISE_API_KEY in Project Settings > Script properties');\n  const r = UrlFetchApp.fetch(SW + path, { headers: { Authorization: 'Bearer ' + key }, muteHttpExceptions: true });\n  if (r.getResponseCode() !== 200) throw new Error('Splitwise ' + r.getResponseCode() + ': ' + r.getContentText().slice(0, 200));\n  return JSON.parse(r.getContentText());\n}\nconst nameOf_ = u => [u.first_name, u.last_name].filter(Boolean).join(' ');\n\nfunction splitwiseSync() {\n  const me = sw_('get_current_user').user, myId = me.id;\n  const rows = [['meta', new Date().toISOString(), nameOf_(me)]];\n  const groups = sw_('get_groups').groups || [], gname = {};\n  groups.forEach(g => {\n    gname[g.id] = g.id === 0 ? 'ללא קבוצה' : g.name;\n    const m = (g.members || []).find(x => x.id === myId); if (!m) return;\n    const bal = (m.balance || []).filter(b => Number(b.amount) !== 0);\n    if (g.id === 0 && !bal.length) return;\n    (bal.length ? bal : [{ amount: 0, currency_code: 'ILS' }]).forEach(b => rows.push(['group', gname[g.id], Number(b.amount), b.currency_code]));\n    const who = id => { const u = (g.members || []).find(x => x.id === id); return u ? nameOf_(u) : String(id); };\n    const debts = (g.simplified_debts && g.simplified_debts.length) ? g.simplified_debts : (g.original_debts || []);\n    debts.forEach(d => {\n      if (d.to === myId) rows.push(['debt', gname[g.id], Number(d.amount), d.currency_code, who(d.from), 'owes_me']);\n      else if (d.from === myId) rows.push(['debt', gname[g.id], Number(d.amount), d.currency_code, who(d.to), 'i_owe']);\n    });\n  });\n  const since = new Date(Date.now() - 90 * 864e5).toISOString();\n  for (let offset = 0, page = 0; page < 10; page++, offset += 100) {\n    const ex = sw_('get_expenses?limit=100&offset=' + offset + '&dated_after=' + encodeURIComponent(since)).expenses || [];\n    ex.forEach(e => {\n      if (e.deleted_at) return;\n      const u = (e.users || []).find(x => x.user_id === myId); if (!u) return;\n      rows.push(['exp', String(e.id), Utilities.formatDate(new Date(e.date), TZ, 'yyyy-MM-dd'), e.description || '', Number(e.cost),\n        e.currency_code, gname[e.group_id || 0] || '', Number(u.net_balance), Number(u.owed_share), Number(u.paid_share),\n        e.payment ? 1 : 0, (e.category && e.category.name) || '']);\n    });\n    if (ex.length < 100) break;\n  }\n  const ss = SpreadsheetApp.openById(SHEET_ID);\n  const sh = ss.getSheetByName('Splitwise') || ss.insertSheet('Splitwise');\n  const W = 12, out = rows.map(r => { const x = r.slice(0, W); while (x.length < W) x.push(''); return x; });\n  sh.clearContents();\n  sh.getRange(1, 1, out.length, W).setValues(out);\n}\n\n/* Run this once. It turns on the hourly update and runs the first one. */\nfunction installHourly() {\n  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'splitwiseSync').forEach(t => ScriptApp.deleteTrigger(t));\n  ScriptApp.newTrigger('splitwiseSync').timeBased().everyHours(1).create();\n  splitwiseSync();\n}\n";
+async function sheetSplitwise(tok){
+  const id=state.instinct.sheetId; if(!id) return null;
+  const meta=await gfetch(tok,`${SAPI}/${id}?fields=sheets(properties(title))`);
+  if(!(meta.sheets||[]).some(x=>x.properties.title===T_SW)) return null;
+  const v=await gfetch(tok,`${SAPI}/${id}/values/${encodeURIComponent(sheetRange(T_SW,'A1:L1500'))}?valueRenderOption=UNFORMATTED_VALUE`);
+  return v.values||[];
+}
+function applySplitwiseApi(rows){
+  const M=(rows||[]).find(r=>r[0]==='meta'); if(!M) return null;
+  const at=Date.parse(M[1])||Date.now(), d=isoOf(at), G={}, D={};
+  rows.filter(r=>r[0]==='group').forEach(r=>{ const rate=swRate(r[3]); if(rate==null) return; G[r[1]]=(G[r[1]]||0)+Number(r[2])*rate; });
+  rows.filter(r=>r[0]==='debt').forEach(r=>{ const rate=swRate(r[3])||1; (D[r[1]]=D[r[1]]||[]).push({who:String(r[4]),a:R2(Number(r[2])*rate),dir:r[5]}); });
+  state.splitwise=state.splitwise||{};
+  Object.entries(G).forEach(([g,b])=>{ state.splitwise[g]={bal:Math.round(b),d,me:'Splitwise (חיבור ישיר)',src:'api',at,debts:D[g]||[]}; });
+  const yms=new Set(); let n=0; const have=new Set(state.tx.map(t=>t.swk).filter(Boolean));
+  rows.filter(r=>r[0]==='exp').forEach(r=>{ const [,id,dt,desc,,cur,g,net,,,pay,cat]=r; if(+pay||!/^\d{4}-\d{2}-\d{2}$/.test(dt)) return;
+    const key='swapi:'+id; if(have.has(key)) return; const rate=swRate(cur); if(rate==null) return; const me=Number(net)*rate; if(Math.abs(me)<0.005) return;
+    const a=R2(-me), m=String(desc||'Splitwise').slice(0,50)+(me>0?' · חברים מחזירים':'');
+    let c=swCat({cat:String(cat||''),m:String(desc||'')}); if(itemMatches(String(desc||''))||/internet|phone|tv\b|utilit|electric|water|rent|mortgage|heat|insurance|ארנונה|ועד/i.test(String(cat||'')+' '+String(desc||''))) c='חשבונות ומנויים';
+    const same=state.tx.find(t=>(t.src==='splitwise-doc'||t.src==='splitwise')&&!t.swk&&t.d===dt&&Math.abs(t.a-a)<0.05);
+    if(same){ same.swk=key; return; }
+    ensureBase(dt.slice(0,7)); state.tx.push({id:uid(),d:dt,m,a,c,tags:['splitwise'],note:g||'Splitwise',rev:false,ex:false,split:[],src:'splitwise',swk:key}); yms.add(dt.slice(0,7)); n++; });
+  yms.forEach(recomputeSpend);
+  return {n,at,groups:Object.keys(G).length};
+}
+function swSetup(){
+  const code=SW_GAS.replace('__SHEET_ID__',state.instinct.sheetId||'');
+  sheet(`<h2>🤝 חיבור Splitwise אוטומטי</h2>
+    <p class="note">סקריפט קטן בחשבון Google שלך יעדכן כל שעה את היתרות וההוצאות מ־Splitwise, והאתר יקרא אותן בכל כניסה. המפתח של Splitwise נשמר רק בסקריפט, לא באתר ולא בקוד.</p>
+    <ol class="steps-ol">
+      <li><b>מפתח מ־Splitwise:</b> נכנסים ל־<a href="https://secure.splitwise.com/apps" target="_blank" rel="noopener">secure.splitwise.com/apps</a>, לוחצים Register your application, ממלאים שם (Status), תיאור (סנכרון לאתר האישי) וכתובת (https://oriaviram20-ai.github.io/Status/), מאשרים את התנאים ולוחצים Register and get API key. מעתיקים את ה־API key.</li>
+      <li><b>פרויקט סקריפט:</b> נכנסים ל־<a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com</a> (פרויקט חדש), מוחקים את מה שכתוב, מדביקים את הקוד שבכפתור למטה ושומרים (Ctrl+S).</li>
+      <li><b>שמירת המפתח:</b> בתפריט הצד ⚙️ Project Settings, למטה Script properties ← Add script property. שם: <code dir="ltr">SPLITWISE_API_KEY</code>, ערך: המפתח. שומרים.</li>
+      <li><b>הפעלה:</b> חוזרים לעורך (&lt;&gt;), בוחרים למעלה את הפונקציה <code dir="ltr">installHourly</code> ולוחצים Run. Google יבקש אישור: בוחרים את החשבון, Advanced, Go to project, Allow.</li>
+      <li>זהו. בגיליון של Status תופיע לשונית Splitwise, ומהכניסה הבאה לאתר היתרות יתעדכנו לבד.</li>
+    </ol>
+    <div class="actions"><button class="btn primary" onclick="copyText(SW_GAS.replace('__SHEET_ID__',state.instinct.sheetId||''),'הקוד הועתק')">📋 העתק את קוד הסקריפט</button><button class="btn ghost" onclick="closeSheet()">סגור</button></div>
+    <details><summary class="note">הצג את הקוד</summary><pre dir="ltr" style="white-space:pre-wrap;font-size:11px;max-height:240px;overflow:auto;background:var(--bg);padding:10px;border-radius:10px">${esc(code)}</pre></details>`);
+}
+async function copyText(t,msg){ try{ await navigator.clipboard.writeText(t); toast(msg||'הועתק'); }catch(e){ toast('ההעתקה נחסמה. אפשר לסמן את הקוד ידנית.'); } }
 const T_SUM='סיכום';
 /* A short summary Instinct can read and send you on WhatsApp. Only totals, no account details. */
 function summaryRows(){
