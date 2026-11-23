@@ -1886,7 +1886,7 @@ async function refreshAll(first){
   let swn=null;
   if(tok){ setStep('splitwise','run','בודק את Splitwise...'); try{ const rows=await withTimeout(sheetSplitwise(tok),10000); if(rows&&rows!=='timeout') swn=applySplitwiseApi(rows); }catch(e){} }
   { const B=swBalances(), last=Object.values(B).map(x=>x.d).sort().pop();
-    setStep('splitwise',swn&&fAge(isoOf(swn.at))<=1?'ok':'warn',swn?`${Object.entries(B).map(([g,x])=>`${g}: ${x.bal>=0?'חייבים לך':'אתה חייב'} ${fmt(Math.abs(x.bal))}`).join(' · ')} · עודכן ${new Date(swn.at).toLocaleString('he-IL',{day:'numeric',month:'numeric',hour:'2-digit',minute:'2-digit'})}${swn.n?` · ${swn.n} הוצאות חדשות`:''}`:`אין חיבור ישיר${last?' · היתרות מ־'+shortDate(last):''}. אפשר לחבר במסך מצב הנתונים`); }
+    setStep('splitwise',swn?(fAge(isoOf(swn.at))<=1?'ok':'warn'):(last&&fAge(last)<=2?'ok':'warn'),swn?`${Object.entries(B).map(([g,x])=>`${g}: ${x.bal>=0?'חייבים לך':'אתה חייב'} ${fmt(Math.abs(x.bal))}`).join(' · ')} · עודכן ${new Date(swn.at).toLocaleString('he-IL',{day:'numeric',month:'numeric',hour:'2-digit',minute:'2-digit'})}${swn.n?` · ${swn.n} הוצאות חדשות`:''}`:`${Object.entries(B).map(([g,x])=>`${g}: ${x.bal>=0?'חייבים לך':'אתה חייב'} ${fmt(Math.abs(x.bal))}`).join(' · ')||'אין יתרות'}${last?' · נכון ל־'+shortDate(last):''} · מתעדכן דרך Instinct`); }
   setStep('auto','run','מחשב...');
   const so=applyStandingOrders(), ac=accrueSavings();
   setStep('auto','ok',so||ac?[so?`${so} קניות מהוראות קבע`:'',ac?`${ac} הפקדות לקופות`:''].filter(Boolean).join(' · '):'אין פעולות חדשות החודש');
