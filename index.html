@@ -456,7 +456,7 @@ details.split summary{cursor:pointer;font-size:14px;font-weight:600}
 .bhead>div:last-child{text-align:left}
 .bhead small{color:var(--muted);font-size:13px}
 .bhead b{font-size:clamp(26px,7vw,34px);font-weight:800;letter-spacing:-.5px;line-height:1.15}
-.bhead span{font-size:13px;color:var(--muted)}
+.bhead>div>span{font-size:13px;color:var(--muted)}
 .empty-b{text-align:center;padding:10px 6px}
 .empty-b b{font-size:18px}
 .empty-b p{color:var(--muted);font-size:14px;margin:6px 0 14px}
@@ -703,7 +703,7 @@ function normalize(s){
   s.reqOff=s.reqOff||{}; s.autoLog=s.autoLog||[];
   s.fx=Object.assign({usd:3.11,src:'default',d:''},s.fx||{}); s.prefs=Object.assign({lazy:false},s.prefs||{});
   s.investPlan=Object.assign({monthly:0,years:25,ret:5},s.investPlan||{});
-  s.tx=s.tx||[]; s.splitwise=s.splitwise||{}; s.instinct=Object.assign({on:false,folderId:null,sheetId:null,files:{},lastSync:0,tasks:[],notes:[],log:[]},s.instinct||{}); s.rules=s.rules||{}; s.budget=s.budget||{}; s.debts=s.debts||[]; s.fgoals=s.fgoals||[]; s.wb=s.wb||[]; s.fi=s.fi||null;
+  s.tx=s.tx||[]; s.cibus=Object.assign({budget:0,entries:[]},s.cibus||{}); s.splitwise=s.splitwise||{}; s.instinct=Object.assign({on:false,folderId:null,sheetId:null,files:{},lastSync:0,tasks:[],notes:[],log:[]},s.instinct||{}); s.rules=s.rules||{}; s.budget=s.budget||{}; s.debts=s.debts||[]; s.fgoals=s.fgoals||[]; s.wb=s.wb||[]; s.fi=s.fi||null;
   s.prefs=Object.assign({mode:'adv',theme:'auto',size:'n',privacy:false,contrast:false,motion:false,readable:false},s.prefs);
   return s;
 }
@@ -839,7 +839,18 @@ let downloadsCap=null;
 async function initDownloads(){ if(window.claude&&window.claude.use){ downloadsCap=await claude.use('downloads'); } }
 
 /* ---------- Calculations ---------- */
-const monthly = it => it.amount/it.freq;
+/* Next charge date of an item, ignoring any end date (looks up to 14 months ahead). */
+function nextChargeRaw(it,from){
+  if(!it.day) return null; const start=new Date(from||new Date()); start.setHours(0,0,0,0);
+  for(let k=0;k<15;k++){ const base=new Date(start.getFullYear(),start.getMonth()+k,1), mo=base.getMonth()+1;
+    if(it.freq>1){ if(!it.m0) continue; if(((mo-it.m0)%it.freq+it.freq)%it.freq!==0) continue; }
+    const dim=new Date(base.getFullYear(),base.getMonth()+1,0).getDate(), d=new Date(base.getFullYear(),base.getMonth(),Math.min(it.day,dim));
+    if(d>=start) return isoLocal(d); }
+  return null;
+}
+/* Cancelled: an end date is set and no charge is left before it. */
+const itemEnded = it => !!it.end && (()=>{ const n=nextChargeRaw(it); return !n||n>it.end; })();
+const monthly = it => itemEnded(it) ? 0 : it.amount/it.freq;
 function totals(){
   const income=state.items.filter(i=>i.cat==='income').reduce((a,i)=>a+monthly(i),0);
   const byCat={}; EXPENSE_CATS.forEach(c=>byCat[c]=state.items.filter(i=>i.cat===c).reduce((a,i)=>a+monthly(i),0));
@@ -877,7 +888,7 @@ function lifeStage(){
 const ST_LABEL={good:'ביעד',near:'קרוב',bad:'דורש תשומת לב',na:'חסרים נתונים',info:'מעקב'};
 function metrics(){
   const t=totals(), p=portfolio();
-  const emRows=state.savings.filter(s=>s.type==='emergency');
+  const emRows=state.savings.filter(s=>s.type==='emergency'||s.liquid);
   const emergency=emRows.reduce((a,s)=>a+(s.balance||0),0);
   const longTerm=state.savings.filter(s=>['gemel','hishtalmut','savings'].includes(s.type));
   const monthlySave=(state.investPlan.monthly||0)+longTerm.reduce((a,s)=>a+(s.monthly||0),0);
@@ -890,7 +901,7 @@ function metrics(){
 function kpis(){
   const m=metrics(), t=m.t;
   const lvl=(v,good,near,hi=true)=>v===null||!isFinite(v)?'na':hi?(v>=good?'good':v>=near?'near':'bad'):(v<=good?'good':v<=near?'near':'bad');
-  const rent=state.items.filter(i=>i.cat==='fixed'&&/שכיר|שכר\s*דירה|משכנת/.test(i.name)).reduce((a,i)=>a+monthly(i),0), rentR=t.income&&rent?rent/t.income:null;
+  const rent=state.items.filter(i=>i.cat==='fixed'&&/שכיר|שכר\s*דירה|תשלום\s*דירה|^דירה|משכנת/.test(i.name)).reduce((a,i)=>a+monthly(i),0), rentR=t.income&&rent?rent/t.income:null;
   const fixedR=t.income?t.expenses/t.income:null, emM=t.expenses?m.emergency/t.expenses:null, subsR=t.income?m.subs/t.income:null;
   const boi=market&&market.boi&&market.boi.rate, cpi=market&&market.cpi&&market.cpi.annual;
   const real=(boi!=null&&cpi!=null)?boi-m.emFee-cpi:null;
@@ -1266,19 +1277,19 @@ async function sheetTx(f){
 async function importFiles(files){
   impUI.busy=true; impUI.error=''; impUI.res=null; render();
   try{
-    let tx=[], bad=[], slips=[], sws=[];
+    let tx=[], bad=[], slips=[], sws=[], cibus=[];
     for(const f of files){
       try{
         if(/\.pdf$/i.test(f.name)||f.type==='application/pdf'){
           const items=await pdfItems(f), sl=parsePayslip(items);
           if(sl){ slips.push(sl); continue; }
           const t=parseStatementRows(pdfRows(items)); if(t.length) tx=tx.concat(t); else bad.push(f.name);
-        } else { const sw=await swFile(f); if(sw){ sw.k=Math.max(0,sw.members.indexOf(state.prefs.swName)); sws.push(sw); continue; } const t=await sheetTx(f); if(t.length) tx=tx.concat(t); else bad.push(f.name); }
+        } else { const cb=await cibusFile(f); if(cb){ cibus.push(cb); continue; } const sw=await swFile(f); if(sw){ sw.k=Math.max(0,sw.members.indexOf(state.prefs.swName)); sws.push(sw); continue; } const t=await sheetTx(f); if(t.length) tx=tx.concat(t); else bad.push(f.name); }
       }catch(e){ if(e&&e.message==='load') throw e; bad.push(f.name); }
     }
     slips.sort((a,b)=>(a.period||'').localeCompare(b.period||''));
-    if(!tx.length&&!slips.length&&!sws.length) throw new Error('nocols');
-    if(!tx.length){ impUI.res={months:[],files:files.length,bad,n:0,total:0,slips,sw:sws}; return; }
+    if(!tx.length&&!slips.length&&!sws.length&&!cibus.length) throw new Error('nocols');
+    if(!tx.length){ impUI.res={months:[],files:files.length,bad,n:0,total:0,slips,sw:sws,cibus}; return; }
     const map={}, unknown=[];
     [...new Set(tx.map(t=>t.m))].forEach(m=>{ const c=catFor(m); if(c) map[m]=c; else unknown.push(m); });
     if(unknown.length&&sampleFn){
@@ -1288,7 +1299,7 @@ async function importFiles(files){
     const byYm={};
     tx.forEach(t=>{ const ym=t.d?t.d.slice(0,7):ymNow(); const g=byYm[ym]=byYm[ym]||{ym,total:0,cats:{},n:0,byM:{}}; const c=map[t.m]||'אחר'; g.cats[c]=(g.cats[c]||0)+t.a; g.byM[t.m]=(g.byM[t.m]||0)+t.a; g.total+=t.a; g.n++; });
     const months=Object.values(byYm).sort((a,b)=>a.ym.localeCompare(b.ym)).map(g=>{ for(const k in g.cats) g.cats[k]=Math.round(g.cats[k]); return {ym:g.ym,total:Math.round(g.total),cats:g.cats,n:g.n,top:Object.entries(g.byM).sort((a,b)=>b[1]-a[1]).slice(0,3)}; });
-    impUI.res={months,files:files.length,bad,n:tx.length,total:Math.round(tx.reduce((s,t)=>s+t.a,0)),slips,tx:tx.map(t=>({d:t.d||today(),m:t.m,a:R2(t.a),c:map[t.m]||'אחר',un:!map[t.m]||unknown.includes(t.m)})),sw:sws};
+    impUI.res={months,files:files.length,bad,n:tx.length,total:Math.round(tx.reduce((s,t)=>s+t.a,0)),slips,tx:tx.map(t=>({d:t.d||today(),m:t.m,a:R2(t.a),c:map[t.m]||'אחר',un:!map[t.m]||unknown.includes(t.m)})),sw:sws,cibus};
   }catch(e){ impUI.error=e&&e.message==='load'?'לא הצלחתי לטעון את קורא הקבצים. בדוק חיבור לאינטרנט ונסה שוב.':e&&e.message==='nocols'?'לא זיהיתי עסקאות בקובץ. אפשר להעלות PDF של פירוט חיובים, או אקסל או CSV מאתר חברת האשראי או הבנק.':'לא הצלחתי לקרוא את הקובץ.'; }
   finally{ impUI.busy=false; if(view.name==='docs'){ render(); const c=document.getElementById('imp-card'); if(c&&(impUI.res||impUI.error)) c.scrollIntoView({behavior:'smooth',block:'start'}); } }
 }
@@ -1359,13 +1370,24 @@ function swSave(r){
   (r.sw||[]).forEach(g=>{ const P=swPlan(g,g.k,impUI.swCard!==false), keys=new Set(P.tx.map(t=>t.key));
     state.tx.filter(t=>t.swk&&(keys.has(t.swk)||t.swk.startsWith(`sw:${g.file}|`)&&P.tx.some(x=>x.d.slice(0,7)===t.d.slice(0,7)))).forEach(t=>yms.add(t.d.slice(0,7)));
     state.tx=state.tx.filter(t=>!(t.swk&&(keys.has(t.swk)||t.swk.startsWith(`sw:${g.file}|`)&&P.tx.some(x=>x.d.slice(0,7)===t.d.slice(0,7)))));
-    P.tx.forEach(x=>{ const ym=x.d.slice(0,7); ensureBase(ym); state.tx.push({id:uid(),d:x.d,m:x.m,a:x.a,c:x.c,tags:['splitwise'],note:g.file,rev:false,ex:false,split:[],src:'splitwise',swk:x.key}); yms.add(ym); n++; });
+    P.tx.forEach(x=>{ const ym=x.d.slice(0,7); ensureBase(ym); state.tx=state.tx.filter(t=>!(t.src==='splitwise-doc'&&t.d===x.d&&Math.abs(t.a-x.a)<0.05)); state.tx.push({id:uid(),d:x.d,m:x.m,a:x.a,c:x.c,tags:['splitwise'],note:g.file,rev:false,ex:false,split:[],src:'splitwise',swk:x.key}); yms.add(ym); n++; });
     state.splitwise=state.splitwise||{}; state.splitwise[g.file]={me:g.members[g.k],bal:Math.round(P.bal),d:today()};
   });
   yms.forEach(recomputeSpend); return n;
 }
-function swBalHTML(){ const E=Object.entries(state.splitwise||{}); if(!E.length) return '';
-  return `<section class="panel" style="padding-block:14px"><h3 style="margin-bottom:4px">🤝 Splitwise <button onclick="quickScan('import')">עדכון ←</button></h3>${E.map(([g,x])=>`<div class="dl"><div class="t"><b>${esc(g)}</b><span>${esc(x.me)} · עודכן ${shortDate(x.d)}</span></div><b class="${x.bal<0?'down':'up'}">${Math.abs(x.bal)<1?'מאוזן ✓':N((x.bal>0?'חייבים לך ':'אתה חייב ')+fmt(Math.abs(x.bal)))}</b></div>`).join('')}</section>`; }
+/* Latest Splitwise balance per group: from CSV imports (state.splitwise) and from Instinct's "balances-snapshot" documents. Positive = friends owe you. */
+function swBalances(){
+  const B={}; Object.entries(state.splitwise||{}).forEach(([g,x])=>B[g]={bal:x.bal,d:x.d,me:x.me||''});
+  (state.docs||[]).forEach(d=>{ const f=d.fields||{}; if(f.category!=='balances-snapshot') return; const g=f.splitwiseGroup||Object.keys(state.splitwise||{}).find(k=>(d.title+' '+(d.insight||'')).includes(k))||'Splitwise'; const at=String(f.observedAt||d.period||'').slice(0,10);
+    const A=d.amounts||[], rec=A.find(a=>/לקבלת|owed to you|you are owed/i.test(a.label)), pay=A.find(a=>/לתשלום|you owe/i.test(a.label));
+    const bal=rec?num(rec.value):pay?-num(pay.value):null; if(bal==null) return;
+    if(!B[g]||String(B[g].d||'')<at) B[g]={bal,d:at,me:'לפי Instinct'}; });
+  return B;
+}
+function swHomeCard(){ const E=Object.entries(swBalances()).filter(([,x])=>Math.abs(x.bal)>=1); if(!E.length) return '';
+  return `<section class="panel"><h3>🤝 Splitwise <button onclick="txUI.ym=ymNow();go('tx')">פירוט ←</button></h3>${E.map(([g,x])=>`<div class="dl"><div class="t"><b>${esc(g)}</b><span>נכון ל־${shortDate(x.d)}</span></div><b class="${x.bal<0?'down':'up'}">${N((x.bal>0?'חייבים לך ':'אתה חייב ')+fmt(Math.abs(x.bal)))}</b></div>`).join('')}</section>`; }
+function swBalHTML(){ const E=Object.entries(swBalances()); if(!E.length) return '';
+  return `<section class="panel" style="padding-block:14px"><h3 style="margin-bottom:4px">🤝 Splitwise <button onclick="quickScan('import')">עדכון ←</button></h3>${E.map(([g,x])=>`<div class="dl"><div class="t"><b>${esc(g)}</b><span>${esc(x.me)} · נכון ל־${shortDate(x.d)}</span></div><b class="${x.bal<0?'down':'up'}">${Math.abs(x.bal)<1?'מאוזן ✓':N((x.bal>0?'חייבים לך ':'אתה חייב ')+fmt(Math.abs(x.bal)))}</b></div>`).join('')}</section>`; }
 
 function saveImport(){
   const r=impUI.res; if(!r) return; const t=totals();
@@ -1393,7 +1415,7 @@ function saveImport(){
   });
   if((r.slips||[]).length){ const last=r.slips[r.slips.length-1], newest=state.docs.filter(d=>d.type==='payslip').sort((a,b)=>b.period.localeCompare(a.period))[0];
     if(newest&&newest.period===last.period) upsertItem('income','משכורת',last.net,1); }
-  const swn=swSave(r); const n=r.months.length+(r.slips||[]).length; impUI.res=null; save(); render(); toast(swn&&!n?`נשמרו ${swn} תנועות מ־Splitwise`:n===1&&!swn?'נשמר':'נשמר');
+  const cbn=cibusSave(r); const swn=swSave(r)+cbn; const n=r.months.length+(r.slips||[]).length; impUI.res=null; save(); render(); toast(cbn&&!n&&swn===cbn?`נשמרו ${cbn} ארוחות בסיבוס`:swn&&!n?`נשמרו ${swn} תנועות מ־Splitwise`:'נשמר');
 }
 function saveImportLegacy(){
   const r=impUI.res; if(!r) return; const ym=document.getElementById('imp-ym').value||r.ym;
@@ -1414,7 +1436,7 @@ function importCard(){
     ${impUI.error?`<p class="status err">${esc(impUI.error)}</p>`:''}
     ${r?`<div class="result">
       ${(r.slips||[]).length?`<h4 style="margin:0 0 6px;font-size:15px">💼 תלושי שכר</h4>${r.slips.map((sl,i)=>sl.partial?`<div class="plan" style="margin:8px 0"><b>תלוש שכר: חלק מהמספרים לא נקראו מהקובץ. השלם את החודש והנטו:</b><div class="two-f" style="margin-top:8px"><div class="field" style="margin:0"><label for="sl-p-${i}">חודש התלוש</label><input id="sl-p-${i}" type="month" value="${sl.period||''}"></div><div class="field" style="margin:0"><label for="sl-n-${i}">שכר נטו (₪)</label><input id="sl-n-${i}" type="number" inputmode="decimal" value="${sl.net??''}"></div></div></div>`:`<div class="dl"><div class="t"><b>${esc(monthLong(sl.period))}</b><span>${sl.tax!=null?`מס הכנסה ${N(fmt(sl.tax))} · `:''}${sl.bl!=null?`ביטוח לאומי ${N(fmt(sl.bl))}`:''}${sl.pension?` · פנסיה ${N(fmt(sl.pension))}`:''}</span></div><span class="chip ok">נטו ${N(fmt(sl.net))}</span></div>`).join('')}<p class="note">ההכנסה ״משכורת״ תתעדכן לנטו של התלוש האחרון.</p>`:''}
-      ${swHTML(r)}
+      ${cibusHTML(r)}${swHTML(r)}
       ${r.n?`<div class="kv" style="margin:10px 0"><div><span>סה״כ</span><b>${N(fmt(r.total))}</b></div><div><span>עסקאות</span><b>${N(r.n)}</b></div></div>`:''}
       ${r.months.map(g=>`<div style="margin:12px 0 4px;display:flex;justify-content:space-between;align-items:baseline"><b>${esc(monthLong(g.ym))}</b><span class="note" style="margin:0">${N(g.n)} עסקאות · ${N(fmt(g.total))}${state.spend[g.ym]&&state.spend[g.ym].src!=='demo'?' · כבר יש נתונים':''}</span></div>${catBars(g.cats,4)}`).join('')}
       ${r.bad.length?`<p class="status err">לא זיהיתי עסקאות ב: ${r.bad.map(esc).join(', ')}</p>`:''}
@@ -1691,10 +1713,17 @@ let market=null; try{ market=JSON.parse(localStorage.getItem('lc-market')); }cat
 if(!market||(market.updatedAt||'')<'2026-11-13') market={"updatedAt": "2026-11-13", "fx": {"usd": 3.191, "eur": 3.537, "date": "2026-11-12"}, "boi": {"rate": 3.25, "date": "2026-10-21"}, "cpi": {"annual": 1.6, "month": "2026-09"}, "indices": [{"key": "sp500", "name": "S&P 500", "value": 7592.4, "ytd": 10.9, "ytdIls": 11.3, "date": "2026-11-12"}, {"key": "ta125", "name": "ת״א 125", "value": 3823.63, "ytd": 4.4, "date": "2026-11-06"}], "prices": {}};
 const daysSince = d => d?-daysUntil(String(d).slice(0,10)):9999;
 const withTimeout = (p,ms) => Promise.race([Promise.resolve(p).catch(()=>null),new Promise(r=>setTimeout(()=>r('timeout'),ms))]);
+async function liveFx(){
+  try{ const r=await fetch('https://api.frankfurter.dev/v1/latest?base=USD&symbols=ILS,EUR'); if(!r.ok) return false; const j=await r.json();
+    const usd=+(j.rates&&j.rates.ILS), eu=+(j.rates&&j.rates.EUR); if(!(usd>2&&usd<6&&eu>0)) return false;
+    market=Object.assign({},market||{}); market.fx=Object.assign({},market.fx||{},{usd:+usd.toFixed(4),eur:+(usd/eu).toFixed(4),date:j.date,src:'ECB'});
+    try{ localStorage.setItem('lc-market',JSON.stringify(market)); }catch(e){} return true; }catch(e){ return false; }
+}
 async function loadMarket(){
-  if(!sync.db) return null;
-  try{ const s=await sync.db.doc('market/latest').get(); if(s.exists){ market=clone(s.data()); try{ localStorage.setItem('lc-market',JSON.stringify(market)); }catch(e){} return market; } }catch(e){}
-  return null;
+  if(!sync.db){ await liveFx(); return market; }
+  try{ const s=await sync.db.doc('market/latest').get(); if(s.exists){ market=clone(s.data()); try{ localStorage.setItem('lc-market',JSON.stringify(market)); }catch(e){} } }catch(e){}
+  /* the shared market doc only updates when someone runs the price job; the exchange rate is fetched fresh every time */
+  await liveFx(); return market;
 }
 async function pullCloud(){
   if(!sync.ref) return initCloud();
@@ -1754,7 +1783,8 @@ async function refreshAll(first){
   setStep('dates',late?'warn':'ok',late?`${cnt(late)} באיחור · ${soon} בחודש הקרוב`:soon?`${cnt(soon)} בחודש הקרוב`:'אין מועדים בחודש הקרוב');
   const recChanged=recordMonth(), YS=yearStats(new Date().getFullYear());
   setStep('year','ok',YS?`${YS.n} חודשים במעקב ב־${YS.y}${YS.nwD!=null?` · ההון ${YS.nwD>=0?'עלה':'ירד'} ב־${fmt(Math.abs(YS.nwD))}`:''}`:'החודש נשמר לסיכום השנה');
-  if(fxChanged||n||recChanged||so||ac) save();
+  const dz=fillItemDays();
+  if(fxChanged||n||recChanged||so||ac||dz) save();
   render();
   spTimer=setTimeout(()=>{ if(splashOn) endSplash(); },1500);
 }
@@ -1927,6 +1957,10 @@ function periodStats(per){
 }
 function chargeDates(it,from,days){
   if(!it.day) return [];
+  if(it.end){ return chargeDatesRaw(it,from,days).filter(d=>d<=it.end); }
+  return chargeDatesRaw(it,from,days);
+}
+function chargeDatesRaw(it,from,days){
   const out=[], start=new Date(from); start.setHours(0,0,0,0);
   for(let k=0;k<3;k++){ const base=new Date(start.getFullYear(),start.getMonth()+k,1), mo=base.getMonth()+1;
     if(it.freq>1){ if(!it.m0) continue; if(((mo-it.m0)%it.freq+it.freq)%it.freq!==0) continue; }
@@ -1976,6 +2010,7 @@ function budgetView(){
       :`<div class="empty-b"><b>עוד אין תקציב</b><p>אפשר לבנות אחד אוטומטית מממוצע ההוצאות שלך ב־3 החודשים האחרונים, ולתקן ידנית.</p><button class="btn primary" onclick="budgetAuto()">בנה לי תקציב</button></div>`}
       <div style="margin-top:8px">${rows||'<p class="empty">אין הוצאות משתנות בחודש הזה.</p>'}</div>
     </section>
+    ${recurringPanel()}
     <section class="panel"><h3>חלוקה 50/30/20</h3>
       ${S.inc>0?`${bar('צרכים',S.needs,50,'var(--ink)')}${bar('רצונות',S.wants,30,'var(--bond)')}${bar('חיסכון',Math.max(0,S.sav),20,'var(--accent)')}
       <p class="note">כלל אצבע: חצי מההכנסה לדברים שחייבים (דיור, אוכל, תחבורה, חשבונות), 30% לדברים שבא לך, ו־20% לחיסכון. צרכים כוללים כאן את התשלומים הקבועים ואת הסופר, התחבורה, הבריאות והבית.</p>`:'<p class="empty">הוסף הכנסה כדי לראות את החלוקה.</p>'}
@@ -1998,7 +2033,7 @@ function budgetView(){
 /* ---- more ---- */
 function moreView(){
   const L=[['goals','🎯','מדדים ואתגרים','איפה אתה עומד'],['invest','📈','השקעות','תיק ומחירים חיים'],['savings','🏦','חיסכון ופנסיה','קרנות וקופות'],['future','🔭','העתיד שלך','הון נטו, חופש כלכלי, יעדים'],
-    ['deadlines','🗂️','ניהול','מועדים וצ׳קליסט שנתי'],['docs','📄','מסמכים וייבוא','סריקה, פירוט, תלושים'],['instinct','🤖','Instinct','מסמכים אוטומטית דרך הדרייב'],['auto','⚙️','אוטומציה','מה מתעדכן לבד'],['year','📊','סיכום שנה','השנה במספרים'],
+    ['deadlines','🗂️','ניהול','מועדים וצ׳קליסט שנתי'],['docs','📄','מסמכים וייבוא','סריקה, פירוט, תלושים'],['cibus','💳','סיבוס','תקציב ארוחות מהעבודה'],['instinct','🤖','Instinct','מסמכים אוטומטית דרך הדרייב'],['auto','⚙️','אוטומציה','מה מתעדכן לבד'],['year','📊','סיכום שנה','השנה במספרים'],
     ['tools','🧮','מחשבונים','משכנתא, נטו, חובות ועוד'],['learn','📚','מדריכים','ומילון מונחים'],['wb','💚','בדיקת רווחה','10 שאלות, פעם ברבעון'],['recap','🎞️','הסיכום החודשי','שקפים לשמירה'],
     ['widgets','▦','ווידג׳טים','לפי מסך הבית'],['settings','🎛️','הגדרות','מצב פשוט, תצוגה, נגישות']];
   return `<div class="page-head"><div><h1>עוד</h1><p>כל האזורים של Status</p></div></div>
@@ -2339,6 +2374,22 @@ function inTasks(){
   state.deadlines.filter(x=>{ const n=daysUntil(x.date); return n>=0&&n<=21; }).forEach(x=>T.push({id:'dl-'+x.id,t:`תזכורת: ${x.name}`,d:`עד ${shortDate(x.date)}. להזכיר לי בוואטסאפ שלושה ימים לפני.`}));
   return T;
 }
+const T_SUM='סיכום';
+/* A short summary Instinct can read and send you on WhatsApp. Only totals, no account details. */
+function summaryRows(){
+  const t=totals(), sp=state.spend[ymNow()], vx=varPart(sp)||0, left=t.income-t.expenses-vx;
+  const now=new Date().toLocaleString('he-IL',{dateStyle:'short',timeStyle:'short'}), up=upcoming(14).filter(u=>u.a!=null&&u.a<0).slice(0,6);
+  const rows=[['נושא','ערך'],['עודכן',now],['נשאר החודש (אחרי קבועות ומשתנות)',Math.round(left)],['הוצאות משתנות החודש',Math.round(vx)],['תשלומים קבועים בחודש',Math.round(t.expenses)]];
+  if(state.cibus&&state.cibus.budget){ const S=cibusStat(ymNow()); rows.push(['סיבוס נשאר',Math.round(S.left)],['סיבוס ליום עבודה',S.perDay!=null?Math.round(S.perDay):'']); }
+  Object.entries(swBalances()).forEach(([g,x])=>rows.push([`Splitwise ${g}`,x.bal>=0?`חייבים לך ${Math.round(x.bal)}`:`אתה חייב ${Math.round(-x.bal)}`]));
+  up.forEach(u=>rows.push([`חיוב ב־${shortDate(u.d)}`,`${u.name}: ${Math.round(-u.a)}`]));
+  return rows;
+}
+async function inWriteSummary(tok,id){
+  const meta=await gfetch(tok,`${SAPI}/${id}?fields=sheets(properties(title))`);
+  if(!(meta.sheets||[]).some(x=>x.properties.title===T_SUM)) await gfetch(tok,`${SAPI}/${id}:batchUpdate`,{method:'POST',body:JSON.stringify({requests:[{addSheet:{properties:{title:T_SUM,rightToLeft:true}}}]})});
+  const rows=summaryRows(); await sheetClear(tok,id,sheetRange(T_SUM,'A1:B60')); await sheetPut(tok,id,sheetRange(T_SUM,`A1:B${rows.length}`),rows);
+}
 async function inWriteTasks(tok,id){
   const old=await sheetGet(tok,id,sheetRange(T_TASKS,'A2:F200')).catch(()=>[]), st={};
   old.forEach(r=>{ if(r[0]) st[r[0]]={s:r[3]||'',n:r[5]||''}; });
@@ -2349,6 +2400,7 @@ async function inWriteTasks(tok,id){
     .concat(done.map(k=>{ const o=old.find(r=>r[0]===k); return [k,o[1]||'',o[2]||'','הושלם ✓ (האתר קיבל)',now,st[k].n]; }));
   await sheetClear(tok,id,sheetRange(T_TASKS,'A1:F300'));
   await sheetPut(tok,id,sheetRange(T_TASKS,`A1:F${rows.length}`),rows);
+  await inWriteSummary(tok,id).catch(()=>{});
   state.instinct.tasks=T.map(t=>({...t,s:st[t.id]&&st[t.id].s||'פתוח',n:st[t.id]&&st[t.id].n||''}));
 }
 /* rows Instinct adds: date | type | title | amount | due/charge date | details | imported */
@@ -2398,7 +2450,7 @@ async function instinctSync(interactive){
       await importFiles(files.map(x=>x.file));
       const r=impUI.res;
       if(r&&!impUI.error){ const partial=(r.slips||[]).some(s=>s.partial), swOk=(r.sw||[]).every(g=>g.members.includes(state.prefs.swName));
-        if(!partial&&swOk&&(r.months.length||(r.slips||[]).length||(r.sw||[]).length)){ impUI.mode='replace'; saveImport(); auto=true; } }
+        if(!partial&&swOk&&(r.months.length||(r.slips||[]).length||(r.sw||[]).length||(r.cibus||[]).length)){ impUI.mode='replace'; saveImport(); auto=true; } }
       files.forEach(x=>state.instinct.files[x.id]=x.mt);
     }
     await inWriteTasks(tok,sid);
@@ -2428,6 +2480,96 @@ window.addEventListener('fb-auth',()=>setTimeout(()=>{ inResume(0); inAuto(); },
 if(inBack&&inBack.err) inUI.err=inBack.err;
 
 
+/* ---------- Cibus (employer meal card): a separate monthly wallet, not counted as your own spending ----------
+   Sources: manual entries, a CSV that Instinct drops in the Drive folder (name contains cibus / סיבוס / pluxee),
+   and receipt documents from the intake area whose category is "cibus". */
+const CIBUS_RE=/cibus|סיבוס|pluxee|פלקסי|פלוקסי/i;
+const cbUI={ym:null};
+function cbShift(n){ cbUI.ym=ymShift(cbUI.ym||ymNow(),n); render(); }
+function cibusEntries(ym){
+  const out=(state.cibus.entries||[]).filter(e=>e.d&&e.d.slice(0,7)===ym).map(e=>({...e,kind:'own'}));
+  const seen=new Set(out.map(e=>e.key).filter(Boolean));
+  (state.docs||[]).forEach(d=>{ const f=d.fields||{}; if(!(CIBUS_RE.test(String(f.category||''))||(d.type==='receipt'&&CIBUS_RE.test(String(d.title||''))))) return;
+    const date=/^\d{4}-\d{2}-\d{2}/.test(f.paymentDate||'')?f.paymentDate.slice(0,10):(d.period?d.period+'-01':null); if(!date||date.slice(0,7)!==ym) return;
+    const a=num(f.amount)||((d.amounts||[])[0]&&num(d.amounts[0].value)); if(!a) return;
+    if(seen.has('doc:'+d.id)) return; out.push({id:d.id,d:date,m:String(f.provider||d.title).replace(CIBUS_RE,'').replace(/^[\s·:\-]+|[\s·:\-]+$/g,'')||'סיבוס',a:R2(a),src:'doc',kind:'doc'}); });
+  return out.sort((x,y)=>y.d.localeCompare(x.d));
+}
+function workdaysLeft(ym){
+  const now=new Date(), [y,m]=ym.split('-').map(Number), dim=dimOf(ym); let n=0;
+  const start=ym===ymNow()?now.getDate():(ym<ymNow()?dim+1:1);
+  for(let d=start;d<=dim;d++){ const wd=new Date(y,m-1,d).getDay(); if(wd<=4) n++; }
+  return n;
+}
+function cibusStat(ym){
+  const L=cibusEntries(ym), spent=L.reduce((a,e)=>a+e.a,0), budget=state.cibus.budget||0, left=budget-spent, wl=workdaysLeft(ym);
+  return {L,spent,budget,left,wl,perDay:wl?left/wl:null};
+}
+function cibusCard(){
+  if(!state.cibus.budget) return '';
+  const S=cibusStat(ymNow()), p=S.budget?Math.min(100,S.spent/S.budget*100):0;
+  return `<section class="panel"><h3>💳 סיבוס <button onclick="go('cibus')">פירוט ←</button></h3>
+    <div class="flow" style="margin-top:0"><div><span>נשאר החודש</span><b class="${S.left<0?'down':''}">${N(fmt(S.left))}</b></div><div><span>${S.wl?'ליום עבודה':'החודש'}</span><b>${S.perDay!=null&&S.left>0?N(fmt(S.perDay)):'—'}</b></div></div>
+    <div class="bar" aria-hidden="true"><i style="width:${p}%;background:${S.left<0?'var(--danger)':'var(--accent)'}"></i></div>
+    <p class="note" style="margin-top:6px">${N(fmt(S.spent))} מתוך ${N(fmt(S.budget))} · ${S.L.length} ארוחות · לא נספר בהוצאות שלך</p></section>`;
+}
+function cibusView(){
+  const ym=cbUI.ym||(cbUI.ym=ymNow()), S=cibusStat(ym), p=S.budget?Math.min(100,S.spent/S.budget*100):0;
+  const byPlace={}; S.L.forEach(e=>byPlace[e.m]=(byPlace[e.m]||0)+e.a); const top=Object.entries(byPlace).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  return `<div class="page-head"><div><h1>סיבוס</h1><p>תקציב ארוחות מהעבודה. לא נספר בהוצאות שלך</p></div><button class="toggle" onclick="editCibus(null)">＋ ארוחה</button></div>
+  ${monthSwitch(ym,'cbShift')}
+  <div class="grid two"><div class="col">
+    <section class="panel">
+      <div class="bhead"><div><small>השתמשת</small><b>${N(fmt(S.spent))}</b><span>מתוך ${N(fmt(S.budget))}</span></div><div><small>${S.left>=0?'נשאר':'חריגה'}</small><b class="${S.left<0?'down':''}">${N(fmt(Math.abs(S.left)))}</b><span>${S.wl&&S.left>0?`${N(fmt(S.perDay))} ליום עבודה · ${S.wl} ימים`:''}</span></div></div>
+      <div class="bbar big"><i class="${S.left<0?'bad':'good'}" style="width:${p}%"></i></div>
+      <p class="note">${S.left<0?'חריגה מהתקציב יורדת בדרך כלל מהשכר או מהכרטיס הפרטי, תלוי במעסיק.':'מה שלא מנוצל עד סוף החודש בדרך כלל לא עובר לחודש הבא. כדאי לבדוק במדיניות של המעסיק.'}</p>
+      <div class="btn-row"><button class="btn ghost" onclick="editCibusBudget()">תקציב חודשי: ${N(fmt(S.budget))}</button></div>
+    </section>
+    ${top.length?`<section class="panel"><h3>איפה אכלת</h3>${top.map(([m,a])=>`<div class="hbar"><span>${esc(m)}</span><span class="tr"><i style="width:${a/top[0][1]*100}%;background:var(--accent)"></i></span><b>${N(fmt(a))}</b></div>`).join('')}</section>`:''}
+  </div><div class="col">
+    <section class="panel"><h3>ארוחות החודש</h3>
+      ${S.L.length?S.L.map(e=>`<button class="txr" onclick="${e.kind==='own'?`editCibus('${e.id}')`:`openDoc('${e.id}')`}"><i class="dot" style="background:var(--accent)"></i><span class="t"><b>${esc(e.m)}</b><span>${shortDate(e.d)}${e.kind==='doc'?' · מהמייל, דרך Instinct':e.src==='import'?' · מקובץ':''}</span></span><b class="amt">${N(fmtP(e.a))}</b></button>`).join(''):'<p class="empty">אין ארוחות בחודש הזה עדיין. Instinct מעדכן מהקבלות במייל, ואפשר גם להוסיף ידנית.</p>'}
+    </section>
+  </div></div>`;
+}
+function editCibusBudget(){
+  sheet(`<h2>תקציב סיבוס חודשי</h2><div class="field"><label for="cb-b">כמה בחודש (₪)</label><input id="cb-b" type="number" inputmode="numeric" min="0" value="${state.cibus.budget||''}"></div>
+    <div class="actions"><button class="btn ghost" onclick="closeSheet()">ביטול</button><button class="btn primary" onclick="state.cibus.budget=Math.max(0,num(document.getElementById('cb-b').value)||0);save();closeSheet();render()">שמור</button></div>`);
+}
+function editCibus(id){
+  const e=id?state.cibus.entries.find(x=>x.id===id):{d:today(),m:'',a:''}; if(!e) return;
+  sheet(`<h2>${id?'עריכת ארוחה':'ארוחה בסיבוס'}</h2>
+    <div class="two-f"><div class="field"><label for="cb-d">תאריך</label><input id="cb-d" type="date" value="${e.d}"></div><div class="field"><label for="cb-a">סכום (₪)</label><input id="cb-a" type="number" inputmode="decimal" step="0.01" min="0" value="${e.a}"></div></div>
+    <div class="field"><label for="cb-m">מסעדה</label><input id="cb-m" value="${esc(e.m)}" autocomplete="off"></div><div class="err" id="cb-err"></div>
+    <div class="actions">${id?`<button class="btn danger" onclick="state.cibus.entries=state.cibus.entries.filter(x=>x.id!=='${id}');save();closeSheet();render()">מחק</button>`:''}<button class="btn ghost" onclick="closeSheet()">ביטול</button><button class="btn primary" onclick="saveCibus('${id||''}')">שמור</button></div>`);
+}
+function saveCibus(id){
+  const g=x=>document.getElementById(x), d=g('cb-d').value, a=num(g('cb-a').value), m=g('cb-m').value.trim().slice(0,60)||'סיבוס', err=g('cb-err');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return err.textContent='צריך תאריך.'; if(!a||a<=0) return err.textContent='צריך סכום.'; if(looksSensitive(m)) return err.textContent='כתוב רק את שם המקום.';
+  const e=id&&state.cibus.entries.find(x=>x.id===id); if(e) Object.assign(e,{d,a:R2(a),m}); else state.cibus.entries.push({id:uid(),d,a:R2(a),m,src:'manual'});
+  save(); closeSheet(); render(); toast('נשמר');
+}
+/* CSV / Excel of Cibus meals (from Instinct): finds date, place and amount columns */
+async function cibusFile(f){
+  if(!CIBUS_RE.test(f.name)||/\.pdf$/i.test(f.name)) return null;
+  const XLSX=await loadXLSX(); let wb;
+  if(/\.csv$/i.test(f.name)||f.type==='text/csv'){ const buf=await f.arrayBuffer(); let t=new TextDecoder('utf-8').decode(buf); if(t.includes('�')) t=new TextDecoder('windows-1255').decode(buf); wb=XLSX.read(t,{type:'string',cellDates:true,raw:true}); }
+  else wb=XLSX.read(await f.arrayBuffer(),{type:'array',cellDates:true});
+  const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true,defval:''});
+  const h=rows.findIndex(r=>{ const L=r.map(x=>String(x).trim().toLowerCase()); return L.some(x=>/^(date|תאריך)/.test(x))&&L.some(x=>/(amount|סכום|מחיר|total)/.test(x)); }); if(h<0) return null;
+  const L=rows[h].map(x=>String(x).trim().toLowerCase()), di=L.findIndex(x=>/^(date|תאריך)/.test(x)), ai=L.findIndex(x=>/(amount|סכום|מחיר|total)/.test(x)), mi=L.findIndex(x=>/(restaurant|merchant|place|business|description|מסעדה|בית עסק|מקום|תיאור|ספק)/.test(x));
+  const out=[]; for(let r=h+1;r<rows.length;r++){ const row=rows[r]; if(!row||!row.length) continue; const dv=row[di], d=dv instanceof Date?isoLocal(dv):/^\d{4}-\d{2}-\d{2}/.test(String(dv).trim())?String(dv).trim().slice(0,10):parseDate(dv); const a=parseAmount(row[ai]);
+    if(!d||!isFinite(a)||a<=0) continue; const m=String(mi>=0?row[mi]:'').trim().slice(0,60)||'סיבוס'; out.push({d,a:R2(a),m,key:`cb:${d}|${m}|${R2(a)}`}); }
+  return out.length?{file:f.name,rows:out}:null;
+}
+function cibusSave(r){
+  let n=0; const keys=new Set((state.cibus.entries||[]).map(e=>e.key).filter(Boolean));
+  (r.cibus||[]).forEach(g=>g.rows.forEach(x=>{ if(keys.has(x.key)) return; keys.add(x.key); state.cibus.entries.push({id:uid(),...x,src:'import'}); n++; }));
+  return n;
+}
+function cibusHTML(r){ if(!(r.cibus||[]).length) return ''; const n=r.cibus.reduce((a,g)=>a+g.rows.length,0), s=r.cibus.reduce((a,g)=>a+g.rows.reduce((b,x)=>b+x.a,0),0);
+  return `<div class="plan" style="margin:8px 0"><b>💳 סיבוס</b> · ${N(n)} ארוחות, ${N(fmt(s))}. נכנס לארנק הסיבוס ולא להוצאות שלך.</div>`; }
+
 function instinctBrief(){
   const I=state.instinct, folder=I.folderId?`https://drive.google.com/drive/folders/${I.folderId}`:'(התיקייה תיווצר בסנכרון הראשון)', sheet=I.sheetId?`https://docs.google.com/spreadsheets/d/${I.sheetId}`:'(הגיליון ייווצר בסנכרון הראשון)';
   return `היי Instinct, מעכשיו אתה עוזר לי לנהל את הכסף והמסמכים דרך האתר שלי, Status. ככה זה עובד:
@@ -2444,6 +2586,8 @@ ${sheet}
 • להוריד את פירוט החיובים של החודש הקודם מישראכרט ולשים בתיקייה.
 • למצוא במייל את תלוש השכר של החודש הקודם ולשים בתיקייה כ־PDF.
 • לייצא CSV מכל קבוצה פעילה ב־Splitwise (Export as spreadsheet) ולשים בתיקייה.
+• כשמגיע מייל על ביטול מנוי או שאור מספר שביטל: לשלוח מסמך מסוג other עם category subscription-cancellation, provider בשם המנוי, ואם כתוב במייל עד מתי השירות פעיל, periodEnd בפורמט YYYY-MM-DD.
+• לעבור על קבלות הסיבוס במייל ולשים בתיקייה קובץ cibus_YYYY-MM.csv עם העמודות: תאריך, מסעדה, סכום. שורה לכל ארוחה. בכל עדכון אפשר לשים את כל החודש מחדש, האתר לא יכפיל.
 • לעבור על הלשונית "${T_TASKS}" ולטפל בכל מה שפתוח. שם מופיעים גם מסמכים חסרים, כמו ארנונה, פוליסות ודוחות פנסיה.
 
 4. חשבונות ומסמכים שאתה מוצא במייל (חשמל, ארנונה, ביטוחים, הוצאות Splitwise, מועדים) ממשיכים כמו היום דרך אזור הקליטה הפרטי:
@@ -2486,7 +2630,7 @@ function instinctView(){
 }
 
 let view = {name:'home'};
-const VALID = ['home','goals','year','widgets','auto','invest','savings','docs','deadlines','tx','budget','more','future','tools','learn','wb','instinct',...Object.keys(CATS)];
+const VALID = ['home','goals','year','widgets','auto','invest','savings','docs','deadlines','tx','budget','more','future','tools','learn','wb','instinct','cibus',...Object.keys(CATS)];
 function go(name,cat){ view={name,cat}; render(); window.scrollTo(0,0); }
 function render(){
   applyPrefs();
@@ -2510,6 +2654,7 @@ function render(){
   else if(v==='learn') app.innerHTML=learnView();
   else if(v==='wb') app.innerHTML=wbView();
   else if(v==='instinct') app.innerHTML=instinctView();
+  else if(v==='cibus') app.innerHTML=cibusView();
   const on=k=>v===k||(k==='home'&&(v==='widgets'||v==='cat'))||(k==='more'&&!['home','widgets','cat','tx','budget'].includes(v));
   const tb=([k,l])=>`<button class="tab ${on(k)?'on':''}" onclick="go('${k}')" aria-current="${on(k)?'page':'false'}">${ICONS[k]}<span>${l}</span></button>`;
   document.getElementById('tabs').innerHTML=`<div class="tabs-in">${tb(['home','בית'])}${tb(['tx','תנועות'])}<button class="tab-plus" aria-label="הוספה וסריקה" onclick="openQuick()">${ICONS.plus}</button>${tb(['budget','תקציב'])}${tb(['more','עוד'])}</div>`;
@@ -2544,6 +2689,9 @@ function homeView(){
       ${monthPanel()}
     </div>
     <div class="col">
+      ${cibusCard()}
+      ${inboxHomeCard()}
+      ${swHomeCard()}
       ${upcomingPanel(4)}
       ${simple()?'':docsHubPanel(4)}
       <section class="panel"><h3>הכל במקום אחד</h3><div class="tiles">${tiles.join('')}</div></section>
@@ -2664,15 +2812,21 @@ function delCh(id){ state.challenges=state.challenges.filter(x=>x.id!==id); save
 
 /* ---------- Category ---------- */
 function catView(c){
-  const items=state.items.filter(i=>i.cat===c);
+  const all=state.items.filter(i=>i.cat===c), items=all.filter(i=>!itemEnded(i)), ended=all.filter(itemEnded);
   const sum=items.reduce((a,i)=>a+monthly(i),0);
+  const when=i=>{ if(!i.day) return `<span style="color:var(--warn)">⚠️ חסר יום חיוב</span>`; const n=chargeDates(i,new Date(),400)[0]||nextChargeRaw(i);
+    const base=i.freq>1?`${FREQ[i.freq]} · ב־${i.day} לחודש`:`נגבה ב־${i.day} לכל חודש`;
+    if(i.end) return `${base} · <b class="down">מבוטל, פעיל עד ${shortDate(i.end)}</b>`;
+    return `${base}${n?` · הבא ${shortDate(n)}`:''}${i.dayAuto?' · זוהה מהתנועות':''}`; };
+  const row=i=>`<button class="row" onclick="editItem('${i.id}')"${itemEnded(i)?' style="opacity:.6"':''}><div class="t"><b>${esc(i.name)}</b><span>${when(i)}</span></div><div class="amt">${N(fmt(i.amount))}${i.freq>1?`<small class="note" style="margin:0">${N(fmt(i.amount/i.freq))} לחודש</small>`:''}</div></button>`;
   return `
   <button class="back" onclick="go('home')">→ חזרה</button>
   <div class="page-head"><div><h1>${CATS[c].icon} ${CATS[c].label}</h1><p>${CATS[c].hint}</p></div><div class="sum">${N(fmt(sum))}<p>בחודש</p></div></div>
   <section class="panel">
-    ${items.length?items.map(i=>`<button class="row" onclick="editItem('${i.id}')"><div class="t"><b>${esc(i.name)}</b><span>${FREQ[i.freq]}</span></div><div class="amt">${N(fmt(i.amount))}${i.freq>1?`<small class="note" style="margin:0">${N(fmt(monthly(i)))} לחודש</small>`:''}</div></button>`).join('')
+    ${items.length?items.map(row).join('')
       :`<p class="empty">עוד אין כאן כלום. הוסף את הראשון, או סרוק מסמך והאתר ימלא בשבילך.</p>`}
   </section>
+  ${ended.length?`<section class="panel"><h3>בוטלו</h3><p class="note" style="margin-top:0">לא נספרים בסכום החודשי.</p>${ended.map(row).join('')}</section>`:''}
   <button class="fab" onclick="editItem(null,'${c}')">+ הוסף</button>`;
 }
 
@@ -2846,6 +3000,7 @@ function editSaving(id){
       <div class="field"><label for="s-dep">דמי ניהול מהפקדה (%)</label><input id="s-dep" type="number" inputmode="decimal" min="0" step="0.01" value="${s.depFee}"></div>
       <div class="field"><label for="s-acc">דמי ניהול מצבירה (%)</label><input id="s-acc" type="number" inputmode="decimal" min="0" step="0.01" value="${s.accFee}"></div>
     </div>
+    <label class="check-row"><input type="checkbox" id="s-liq" ${s.liquid?'checked':''}>כסף נזיל שאפשר להשתמש בו בחירום (נספר ב״חודשי ביטחון״)</label>
     <div class="err" id="s-err"></div>
     <div class="actions">${id?`<button class="btn danger" onclick="delSaving('${id}')">מחק</button>`:''}<button class="btn ghost" onclick="closeSheet()">ביטול</button><button class="btn primary" onclick="saveSaving('${id||''}')">שמור</button></div>`);
 }
@@ -2854,7 +3009,7 @@ function saveSaving(id){
   const name=g('s-name').trim(), err=document.getElementById('s-err');
   if(!name) return err.textContent='צריך לתת שם.';
   if(looksSensitive(name)) return err.textContent='זה נראה כמו מספר חשבון או עמית. כתוב רק שם, למשל ״קרן פנסיה״.';
-  const data={name,type:g('s-type'),balance:num(g('s-bal'))||0,monthly:num(g('s-mon'))||0,depFee:num(g('s-dep'))||0,accFee:num(g('s-acc'))||0,acc:ymNow(),est:false};
+  const data={name,type:g('s-type'),balance:num(g('s-bal'))||0,monthly:num(g('s-mon'))||0,depFee:num(g('s-dep'))||0,accFee:num(g('s-acc'))||0,acc:ymNow(),est:false,liquid:document.getElementById('s-liq').checked};
   const s=id&&state.savings.find(x=>x.id===id);
   if(s) Object.assign(s,data); else state.savings.push({id:uid(),...data});
   save(); closeSheet(); render();
@@ -2870,13 +3025,22 @@ async function refreshStaging(){
   if(!(window.FB&&FB.user&&FB.listStaging)||Date.now()-stagingUI.at<60000) return; stagingUI.at=Date.now();
   try{ const L=await FB.listStaging(), have=new Set();
     (state.docs||[]).forEach(d=>{ if(d.id) have.add(d.id); const f=d.fields||{}; [f.sourceKey,...(f.sourceKeys||[])].forEach(k=>{ if(k) have.add(k); }); });
-    const n=L.filter(x=>x.payload&&x.payload.document&&!have.has(x.payload.document.id)&&!(x.payload.dedupKeys||[]).some(k=>have.has(k))).length;
-    if(n!==stagingUI.n){ stagingUI.n=n; if(view.name==='docs'&&!document.querySelector('.backdrop')) render(); } }catch(e){}
+    const P=L.filter(x=>x.payload&&x.payload.document&&!have.has(x.payload.document.id)&&!(x.payload.dedupKeys||[]).some(k=>have.has(k))), n=P.length;
+    stagingUI.titles=P.sort((a,b)=>(b.stagedAt||0)-(a.stagedAt||0)).map(x=>x.payload.document.title);
+    if(n!==stagingUI.n){ stagingUI.n=n; if((view.name==='docs'||view.name==='home')&&!document.querySelector('.backdrop')) render(); } }catch(e){}
+}
+function inboxHomeCard(){
+  refreshStaging();
+  const B=(state.docs||[]).filter(d=>!d.appliedAt&&(docBudgetPlan(d)||docSplitPlan(d)||(docCancelPlan(d)&&docCancelPlan(d).it&&!docCancelPlan(d).it.end)));
+  const n=stagingUI.n||0; if(!n&&!B.length) return '';
+  return `<section class="panel"><h3>📥 מחכה לאישור שלך</h3>
+    ${n?`<p class="note" style="margin-top:0">${n} פריטים ש־Instinct שלח ועוד לא נכנסו לאתר:</p>${(stagingUI.titles||[]).slice(0,4).map(t=>`<div class="dl"><div class="t"><b>${esc(t)}</b></div></div>`).join('')}<a class="btn primary" style="text-decoration:none;display:inline-flex;margin-top:8px" href="document-intake.html">לאישור ←</a>`:''}
+    ${B.map(d=>`<button class="dl" style="width:100%;background:none;border:0;text-align:right" onclick="openDoc('${d.id}')"><div class="t"><b>${esc(d.title)}</b><span>במסמכים, מחכה לפעולה</span></div><span class="chip soon">לטיפול</span></button>`).join('')}</section>`;
 }
 function stagingCard(){
   if(!(window.FB&&FB.user)) return '';
   return `<section class="panel"><h3>📥 מסמכים מ־Instinct</h3><p class="note" style="margin-top:0">${stagingUI.n?`${stagingUI.n} מסמכים ש־Instinct אסף מחכים לבדיקה שלך.`:stagingUI.n===0?'אין מסמכים שמחכים לבדיקה ✓':'Instinct שומר מסמכים באזור קליטה פרטי. שם בודקים ומוסיפים אותם למסמכים.'}</p><a class="btn ${stagingUI.n?'primary':'ghost'}" style="text-decoration:none;display:inline-flex" href="document-intake.html">לאזור הקליטה ←</a>
-  ${(()=>{ const B=(state.docs||[]).filter(d=>!d.appliedAt&&docBudgetPlan(d)); return B.length?`<p class="note">חשבונות שאפשר להוסיף לתשלומים הקבועים:</p>${B.map(d=>`<button class="dl" style="width:100%;background:none;border:0;text-align:right" onclick="openDoc('${d.id}')"><div class="t"><b>${esc(d.title)}</b><span>${esc(d.period||'')}${d.fields&&d.fields.personalShare?' · החלק שלך '+fmt(d.fields.personalShare):''}</span></div><span class="chip soon">להוספה</span></button>`).join('')}`:''; })()}</section>`;
+  ${(()=>{ const B=(state.docs||[]).filter(d=>!d.appliedAt&&(docBudgetPlan(d)||docSplitPlan(d)||(docCancelPlan(d)&&docCancelPlan(d).it&&!docCancelPlan(d).it.end))); return B.length?`<p class="note">מסמכים שמחכים להחלטה שלך:</p>${B.map(d=>`<button class="dl" style="width:100%;background:none;border:0;text-align:right" onclick="openDoc('${d.id}')"><div class="t"><b>${esc(d.title)}</b><span>${esc(d.period||'')}${d.fields&&d.fields.personalShare?' · החלק שלך '+fmt(d.fields.personalShare):''}</span></div><span class="chip soon">להוספה</span></button>`).join('')}`:''; })()}</section>`;
 }
 function docsView(){
   refreshStaging();
@@ -3044,6 +3208,7 @@ function docItemTarget(d){
   return null;
 }
 function docBudgetPlan(d,monthsOverride){
+  if(/cancel|ביטול|בוטל/i.test(((d.fields||{}).category||'')+' '+d.title)) return null;
   const f=d.fields||{}, T=docItemTarget(d); if(!T) return null;
   const total=num(f.amount), share=num(f.personalShare);
   if(!(total>0)&&!(share>0)) return null;
@@ -3055,6 +3220,70 @@ function docBudgetPlan(d,monthsOverride){
   return {cat:T.cat,name:T.name,amount:Math.round(val*100)/100,freq:fr,share:share!=null&&share>0,months,amt};
 }
 const docMUI={};
+/* A shared expense from Splitwise (usually staged by Instinct) becomes a transaction:
+   a friend paid -> your share is an expense; you paid on your card -> a negative line for what friends owe back. */
+function docSplitPlan(d){
+  const f=d.fields||{}; if(docBudgetPlan(d)) return null;
+  const txt=(d.insight||'')+' '+(d.issuer||'')+' '+(d.amounts||[]).map(a=>a.label).join(' ')+' '+(f.category||'')+' '+(f.splitwiseGroup?'splitwise':'');
+  if(!(/shared-expense/.test(f.category||'')||/splitwise/i.test(txt))) return null;
+  if(f.category==='balances-snapshot') return null;
+  const share=num(f.personalShare), lent=num(f.splitwiseLent);
+  const date=[f.expenseDate,f.paymentDate,f.splitwiseExpenseDate].find(x=>/^\d{4}-\d{2}-\d{2}/.test(x||''))||(d.period?d.period+'-15':today());
+  const c=catFor(d.title)||'דיור ובית';
+  if(lent>0) return {d:date.slice(0,10),a:R2(-lent),m:`${d.title} · חברים מחזירים`,c};
+  if(share>0) return {d:date.slice(0,10),a:R2(share),m:d.title,c};
+  return null;
+}
+function docSplitHTML(d){
+  const P=docSplitPlan(d); if(!P) return '';
+  if(d.appliedAt) return `<div class="insight">✓ נכנס לתנועות.</div>`;
+  return `<div class="insight"><b>הוצאה משותפת מ־Splitwise</b><br>${P.a>0?`נכנס ל״תנועות״ החלק שלך: ${N(fmt(P.a))}`:`נכנס ל״תנועות״ החזר מהחברים: ${N(fmt(-P.a))}`}, בתאריך ${shortDate(P.d)}, בקטגוריה ${esc(P.c)}.
+    <button class="btn primary" style="margin-top:10px" onclick="applyDocSplit('${d.id}')">הוסף לתנועות</button></div>`;
+}
+function applyDocSplit(id){
+  const d=state.docs.find(x=>x.id===id); if(!d) return; const P=docSplitPlan(d); if(!P||d.appliedAt) return;
+  const dup=state.tx.some(t=>(t.src==='splitwise'||t.src==='splitwise-doc')&&t.d===P.d&&Math.abs(t.a-P.a)<0.05);
+  if(!dup){ addTx({d:P.d,m:P.m.slice(0,60),a:P.a,c:P.c,tags:['splitwise'],note:'Splitwise',src:'splitwise-doc'}); recomputeSpend(P.d.slice(0,7)); }
+  d.appliedAt=Date.now(); save(); openDoc(id); render(); toast('נכנס לתנועות');
+}
+const recKey=m=>norm(m).replace(/\S*\d\S*/g,' ').replace(/\s+/g,' ').trim();
+function itemMatches(m){ const L=norm(m); return state.items.some(i=>norm(i.name).split(/[\s()·,]+/).filter(w=>w.length>=4).some(w=>L.includes(w))); }
+/* Charges that came back at least 3 different months with nearly the same amount, and are not in fixed payments yet */
+function recurringSuggestions(){
+  const by={}; state.tx.forEach(t=>{ if(t.ex||t.a<=0||t.src==='splitwise'||t.src==='splitwise-doc') return; const k=recKey(t.m); if(k.length<3) return; (by[k]=by[k]||[]).push(t); });
+  const dis=state.recDismiss||[];
+  return Object.entries(by).map(([k,L])=>{ const months=[...new Set(L.map(t=>t.d.slice(0,7)))].sort(), avg=L.reduce((a,t)=>a+t.a,0)/L.length, stable=L.every(t=>Math.abs(t.a-avg)<=Math.max(2,avg*0.1));
+      const last=L.slice().sort((a,b)=>b.d.localeCompare(a.d))[0]; return {k,m:last.m,c:last.c,avg:Math.round(avg*100)/100,months,stable,n:L.length,day:+last.d.slice(8,10)}; })
+    .filter(r=>r.months.length>=3&&r.stable&&r.n<=r.months.length+1&&!dis.includes(r.k)&&!itemMatches(r.m)).sort((a,b)=>b.avg-a.avg);
+}
+function recurringPanel(){
+  const R=recurringSuggestions(); if(!R.length) return '';
+  return `<section class="panel"><h3>חיובים שחוזרים כל חודש</h3><p class="note" style="margin-top:0">האתר מצא חיובים שחזרו לפחות 3 חודשים באותו סכום, ועוד לא נמצאים בתשלומים הקבועים.</p>
+    ${R.slice(0,6).map(r=>`<div class="dl"><div class="t"><b>${esc(r.m.replace(/\s*אתר$/,''))}</b><span>${N(fmt(r.avg))} בחודש · ${r.months.length} חודשים · ${esc(r.c)}</span></div><span style="display:flex;gap:6px"><button class="chip ok" onclick="addRecurring('${encodeURIComponent(r.k)}')">הוסף</button><button class="chip mute" onclick="dismissRecurring('${encodeURIComponent(r.k)}')">לא</button></span></div>`).join('')}</section>`;
+}
+function addRecurring(k){ k=decodeURIComponent(k); const r=recurringSuggestions().find(x=>x.k===k); if(!r) return;
+  const cat=r.c==='חשבונות ומנויים'?(/ביטוח|הפניקס|הראל|מגדל|כלל|מנורה/.test(r.m)?'insurance':/בנק|עמלה|דמי כרטיס/.test(r.m)?'bills':'subs'):'bills';
+  const name=r.m.replace(/\s*(אתר|הוראת קבע)$/,'').replace(/\S*\d\S*/g,'').replace(/\s+/g,' ').trim().slice(0,40);
+  upsertItem(cat,name,r.avg,1); const it=state.items.find(i=>i.cat===cat&&i.name===name); if(it) it.day=r.day; save(); render(); toast(`״${name}״ נוסף לתשלומים הקבועים`); }
+function dismissRecurring(k){ k=decodeURIComponent(k); state.recDismiss=[...new Set([...(state.recDismiss||[]),k])]; save(); render(); }
+function docCancelPlan(d){
+  const f=d.fields||{}; if(!/cancel|ביטול|בוטל/i.test((f.category||'')+' '+d.title)) return null;
+  const W=itemWords((f.provider||'')+' '+d.title.replace(/בוטל.*$/,'')+' '+(d.issuer||'')).filter(w=>!/^(google|play|billing|report|דיווח)$/i.test(w));
+  const it=state.items.find(i=>i.cat!=='income'&&itemWords(i.name).some(w=>W.includes(w)||W.some(x=>x.includes(w)))); if(!it) return {it:null};
+  const from=/^\d{4}-\d{2}-\d{2}/.test(f.periodEnd||'')?null:new Date((d.ts||Date.now())+864e5);
+  return {it,end:/^\d{4}-\d{2}-\d{2}/.test(f.periodEnd||'')?f.periodEnd.slice(0,10):cancelEndFor(it.day,it.freq,it.m0,from)};
+}
+function docCancelHTML(d){
+  const P=docCancelPlan(d); if(!P) return '';
+  if(!P.it) return `<div class="insight">דיווח על ביטול מנוי, אבל לא מצאתי מנוי תואם בתשלומים הקבועים.</div>`;
+  if(d.appliedAt||P.it.end) return `<div class="insight">✓ ״${esc(P.it.name)}״ מסומן כמבוטל${P.it.end?`, פעיל עד ${shortDate(P.it.end)}`:''}.</div>`;
+  return `<div class="insight"><b>ביטול מנוי</b><br>״${esc(P.it.name)}״ (${N(fmt(P.it.amount))}) יסומן כמבוטל, פעיל עד ${shortDate(P.end)}, ויצא מהסכום החודשי ומהחיובים הקרובים.
+    <button class="btn primary" style="margin-top:10px" onclick="applyDocCancel('${d.id}')">סמן כמבוטל</button></div>`;
+}
+function applyDocCancel(id){
+  const d=state.docs.find(x=>x.id===id); if(!d) return; const P=docCancelPlan(d); if(!P||!P.it) return;
+  P.it.end=P.end; d.appliedAt=Date.now(); save(); openDoc(id); render(); toast(`״${P.it.name}״ סומן כמבוטל`);
+}
 function docBudgetHTML(d){
   const P=docBudgetPlan(d,docMUI[d.id]); if(!P) return '';
   if(d.appliedAt) return `<div class="insight">✓ נוסף לתשלומים הקבועים בתאריך ${new Date(d.appliedAt).toLocaleDateString('he-IL')}.</div>`;
@@ -3073,6 +3302,8 @@ function openDoc(id){
     ${d.amounts&&d.amounts.length?(()=>{const sc=/^(shared-expense|balances-snapshot)$/.test(d.fields&&d.fields.category||'')||d.fields&&d.fields.splitwiseLent!=null;return `<div class="kv">${d.amounts.map(a=>`<div><span>${esc(a.label)}</span><b>${N(sc?a.value.toLocaleString('he-IL',{minimumFractionDigits:2,maximumFractionDigits:2})+' ₪':fmt(a.value))}</b></div>`).join('')}</div>`;})():''}
     ${d.insight?`<div class="insight">${esc(d.insight)}</div>`:''}
     ${docBudgetHTML(d)}
+    ${docSplitHTML(d)}
+    ${docCancelHTML(d)}
     <div class="actions"><button class="btn danger" onclick="delDoc('${d.id}')">מחק</button><button class="btn primary" onclick="closeSheet()">סגור</button></div>`);
 }
 function delDoc(id){ state.docs=state.docs.filter(x=>x.id!==id); save(); closeSheet(); render(); }
@@ -3128,6 +3359,8 @@ function editItem(id,cat){
     <div class="field"><label for="f-freq">כל כמה זמן</label><select id="f-freq">${Object.entries(FREQ).map(([k,v])=>`<option value="${k}" ${+k===it.freq?'selected':''}>${v}</option>`).join('')}</select></div>
     <div class="two-f"><div class="field"><label for="f-day">${it.cat==='income'?'יום שהכסף נכנס':'יום החיוב בחודש'}</label><input id="f-day" type="number" inputmode="numeric" min="1" max="31" value="${it.day||''}" placeholder="למשל 10"></div>
     <div class="field"><label for="f-m0">חודש חיוב (אם לא חודשי)</label><select id="f-m0"><option value="">—</option>${Array.from({length:12},(_,i)=>`<option value="${i+1}" ${it.m0===i+1?'selected':''}>${new Date(2026,i,1).toLocaleDateString('he-IL',{month:'long'})}</option>`).join('')}</select></div></div>
+    ${it.cat!=='income'?`<div class="field"><label for="f-end">בוטל? פעיל עד תאריך</label><input id="f-end" type="date" value="${it.end||''}">
+      <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap"><button type="button" class="chip" onclick="document.getElementById('f-end').value=cancelEndFor(+document.getElementById('f-day').value,+document.getElementById('f-freq').value,+document.getElementById('f-m0').value)">ביטלתי עכשיו</button>${it.end?`<button type="button" class="chip mute" onclick="document.getElementById('f-end').value=''">לא בוטל</button>`:''}</div></div>`:''}
     <div class="err" id="f-err"></div>
     <div class="actions">${id?`<button class="btn danger" onclick="delItem('${id}')">מחק</button>`:''}<button class="btn ghost" onclick="closeSheet()">ביטול</button><button class="btn primary" onclick="saveItem('${id||''}','${it.cat}')">שמור</button></div>`);
 }
@@ -3139,8 +3372,27 @@ function saveItem(id,cat){
   if(amount===null||amount<0) return err.textContent='צריך סכום תקין.';
   const it=id&&state.items.find(i=>i.id===id);
   const dv=parseInt(document.getElementById('f-day').value), day=dv>=1&&dv<=31?dv:null, m0=+document.getElementById('f-m0').value||null;
-  if(it) Object.assign(it,{name,amount,freq,day,m0}); else state.items.push({id:uid(),cat,name,amount,freq,day,m0});
+  const fe=document.getElementById('f-end'), end=fe&&/^\d{4}-\d{2}-\d{2}$/.test(fe.value)?fe.value:null;
+  if(it){ if(it.day!==day) delete it.dayAuto; Object.assign(it,{name,amount,freq,day,m0,end}); if(!end) delete it.end; }
+  else state.items.push(Object.assign({id:uid(),cat,name,amount,freq,day,m0},end?{end}:{}));
   save(); closeSheet(); render();
+}
+/* After cancelling, the service usually runs until the day before the next charge. */
+function cancelEndFor(day,freq,m0,from){
+  if(!day) return today(); const n=nextChargeRaw({day,freq:freq||1,m0:m0||null},from||new Date(Date.now()+864e5)); if(!n) return today();
+  const d=new Date(n+'T12:00:00'); d.setDate(d.getDate()-1); return isoLocal(d);
+}
+function itemWords(name){ return norm(name).split(/[\s()·,.\-]+/).filter(w=>w.length>=3&&!/^(של|דמי|מנוי|חשבון|ביטוח|חודשי|דירה|תשלום|בית|חברת|בע|ישראל|plus|pro)$/.test(w)); }
+function fillItemDays(){
+  let n=0;
+  state.items.filter(i=>i.cat!=='income'&&!i.day).forEach(i=>{
+    const W=itemWords(i.name); if(!W.length) return;
+    const T=state.tx.filter(t=>t.a>0&&W.some(w=>norm(t.m).includes(w))&&Math.abs(t.a-i.amount)<=Math.max(3,i.amount*0.3)).sort((a,b)=>b.d.localeCompare(a.d));
+    const D=(state.docs||[]).filter(d=>{ const f=d.fields||{}; return /^\d{4}-\d{2}-\d{2}/.test(f.paymentDate||'')&&W.some(w=>norm(d.title+' '+(f.provider||'')).includes(w)); }).map(d=>d.fields.paymentDate).sort().reverse();
+    const date=(T[0]&&T[0].d)||D[0]; if(!date) return;
+    i.day=+date.slice(8,10); i.dayAuto=true; if(i.freq>1&&!i.m0) i.m0=((+date.slice(5,7)-1)%i.freq)+1; n++;
+  });
+  return n;
 }
 function delItem(id){ state.items=state.items.filter(i=>i.id!==id); save(); closeSheet(); render(); }
 function clearDemo(){ const keep={birthYear:state.birthYear,profile:state.profile}; state=normalize({demo:false,...keep}); state.investPlan.monthly=0; save(); render(); }
